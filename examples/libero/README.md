@@ -53,6 +53,76 @@ USE_TF=0 uv run scripts/serve_policy.py --port=8000 --env LIBERO
 
 Use Python 3.10 for `examples/libero/.venv`. Python 3.8 is too old for the current `examples/libero/main.py`, and Python 3.11 does not have a matching `torch==1.11.0+cu113` wheel.
 
+## Observation Space
+
+The `pi0_libero` and `pi0_fast_libero` setups in this repo use the same LIBERO observation contract:
+
+- third-person RGB camera: `agentview`
+- wrist RGB camera: `robot0_eye_in_hand`
+- low-dimensional state: 8D proprio input built from end-effector position, end-effector orientation, and gripper state
+- language prompt: task description
+
+At eval time, `examples/libero/main.py` reads the simulator observations:
+
+- `obs["agentview_image"]`
+- `obs["robot0_eye_in_hand_image"]`
+
+and sends them to the policy server as:
+
+- `observation/image`
+- `observation/wrist_image`
+- `observation/state`
+- `prompt`
+
+The relevant code is in:
+
+- [examples/libero/main.py](main.py): constructs the LIBERO policy request payload
+- [src/openpi/policies/libero_policy.py](../../src/openpi/policies/libero_policy.py): maps LIBERO inputs to the model input format
+- [src/openpi/training/config.py](../../src/openpi/training/config.py): dataset repacking for LIBERO training
+- [src/openpi/models/model.py](../../src/openpi/models/model.py): canonical model observation keys
+
+Model-side image inputs are always the three canonical keys:
+
+- `base_0_rgb`
+- `left_wrist_0_rgb`
+- `right_wrist_0_rgb`
+
+For LIBERO:
+
+- `base_0_rgb` = `agentview`
+- `left_wrist_0_rgb` = `robot0_eye_in_hand`
+- `right_wrist_0_rgb` = zero-padded dummy image
+
+So yes, the policy does use a wrist camera on LIBERO in this repo, but only one real wrist view. The second wrist slot is padding.
+
+## Masking And Replay Debugging
+
+This repo also has a simulator-backed annotation / debugging toolkit under
+[`src/annotation/`](../../src/annotation/README.md).
+
+The most useful entrypoints are:
+
+- `annotation.libero_demo_replay`: replay one stored demo by restoring MuJoCo
+  simulator state and rendering fresh frames
+- `annotation.libero_episode_sanity_check`: compare stored RLDS JPEGs against
+  fresh simulator replay, with an optional third masked-simulator panel
+- `annotation.libero_masked_replay_visualization`: compare original simulator
+  replay against masked simulator replay only
+- `annotation.libero_bddl_object_stack_inspector`: inspect how BDDL object
+  category names resolve to concrete LIBERO / robosuite classes
+
+The masking path is segmentation-backed and can affect policy-facing RGB
+observations as well as human-visible replay videos. The eval entrypoint
+`examples/libero/main.py` exposes this via:
+
+- `--mask-instances-csv`
+- `--mask-rgb-csv`
+- `--mask-alpha`
+- `--mask-cameras-csv`
+
+For the full masking workflow, including replay examples, see
+[`MASKING_README.md`](../../MASKING_README.md).
+
 ## Results
 
 If you follow the training instructions and hyperparameters in the `pi0_libero` and `pi0_fast_libero` configs, you should get results similar to the following:

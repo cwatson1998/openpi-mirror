@@ -23,6 +23,9 @@ Treat `third_party/` as vendored code. Avoid editing it unless the task explicit
 - `src/openpi/training/data_loader.py`: dataset wiring, including LIBERO prompt selection
 - `src/openpi/serving/websocket_policy_server.py`: websocket serving path
 - `src/annotation/libero_demo_replay.py`: simulator-backed LIBERO replay and path-resolution utilities
+- `src/annotation/libero_episode_sanity_check.py`: RLDS-vs-simulator-vs-masked-simulator comparison export
+- `src/annotation/libero_bddl_object_stack_inspector.py`: BDDL object-category -> implementation-class inspector
+- `src/annotation/README.md`: overview of the annotation and replay toolchain
 - `src/annotation/libero_masked_replay_visualization.py`: side-by-side original vs masked simulator replay visualization
 - `src/annotation/libero_resolution_inspector.py`: RLDS episode -> source HDF5 / BDDL / model XML inspection helper
 - `packages/openpi-client/src/openpi_client/websocket_client_policy.py`: websocket client used by eval

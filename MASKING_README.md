@@ -33,7 +33,9 @@ The policy-eval entrypoint uses this in:
 The annotation / replay tooling uses this in:
 
 - `src/annotation/libero_demo_replay.py`
+- `src/annotation/libero_episode_sanity_check.py`
 - `src/annotation/libero_masked_replay_visualization.py`
+- `src/annotation/README.md`
 
 ## How It Works
 
@@ -133,6 +135,35 @@ That command writes:
 The current real example artifact is:
 
 - `outputs/libero_masked_replay/ep0_bowl.mp4`
+
+## RLDS vs Simulator vs Masked Simulator
+
+If you want the most direct sanity check for one RLDS episode, use:
+
+```bash
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+  -m annotation.libero_episode_sanity_check \
+  --dataset-name libero_spatial_no_noops \
+  --data-dir data/libero/raw \
+  --episode-index 0 \
+  --demo-search-root third_party/libero/libero/datasets \
+  --masked-instance akita_black_bowl_1 \
+  --mask-rgb 0,0,0 \
+  --output-dir outputs/libero_episode_sanity_check/ep0_masked
+```
+
+That export shows:
+
+- left: saved RLDS JPEG frames
+- middle: fresh simulator replay from saved MuJoCo state
+- right: masked simulator replay from the same saved state
+
+This is the quickest display test for confirming that:
+
+- replay alignment is still good
+- the mask is being applied by simulator-backed rendering rather than by copying
+  stored dataset images
+- the masked RGB is what a policy would see from the wrapped env
 
 ## Choosing Instance Names
 
