@@ -1,10 +1,9 @@
 """Create a side-by-side sanity-check video for one LIBERO episode.
 
-Left panel:
+Panels:
 - saved RLDS image stream
-
-Right panel:
 - fresh simulator render produced by restoring saved MuJoCo state
+- optional masked simulator render produced by restoring saved MuJoCo state
 
 This is the quickest way to check whether simulator-state replay is aligned with
 the dataset images for a specific episode. The output adds labels and frame
@@ -20,6 +19,19 @@ Example usage:
       --demo-search-root third_party/libero/libero/datasets \\
       --output-dir outputs/libero_episode_sanity_check/ep0 \\
       --video-path outputs/libero_episode_sanity_check/ep0.mp4
+
+Masked comparison usage:
+    PYTHONPATH=src:third_party/libero \\
+      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
+      -m annotation.libero_episode_sanity_check \\
+      --dataset-name libero_spatial_no_noops \\
+      --data-dir data/libero/raw \\
+      --episode-index 0 \\
+      --demo-search-root third_party/libero/libero/datasets \\
+      --masked-instance akita_black_bowl_1 \\
+      --mask-rgb 0,0,0 \\
+      --output-dir outputs/libero_episode_sanity_check/ep0_masked \\
+      --video-path outputs/libero_episode_sanity_check/ep0_masked.mp4
 """
 
 from __future__ import annotations
@@ -67,67 +79,72 @@ def make_sanity_check_frames(
     *,
     rlds_frames: np.ndarray,
     simulator_frames: np.ndarray,
+    masked_simulator_frames: np.ndarray | None = None,
     dataset_name: str,
     episode_index: int,
     task_instruction: str,
     left_label: str = "RLDS stored JPEG",
-    right_label: str = "Simulator state replay",
+    middle_label: str = "Simulator state replay",
+    right_label: str = "Masked simulator replay",
 ) -> np.ndarray:
     if rlds_frames.ndim != 4 or simulator_frames.ndim != 4:
         raise ValueError("Expected frame arrays with shape [num_frames, height, width, channels].")
+    if masked_simulator_frames is not None and masked_simulator_frames.ndim != 4:
+        raise ValueError("Expected masked simulator frames with shape [num_frames, height, width, channels].")
 
-    num_frames = min(int(rlds_frames.shape[0]), int(simulator_frames.shape[0]))
+    frame_sources = [rlds_frames, simulator_frames]
+    panel_labels = [left_label, middle_label]
+    if masked_simulator_frames is not None:
+        frame_sources.append(masked_simulator_frames)
+        panel_labels.append(right_label)
+
+    num_frames = min(int(frames.shape[0]) for frames in frame_sources)
     if num_frames == 0:
         raise ValueError("No frames available for sanity-check visualization.")
 
-    if rlds_frames.shape[1:] != simulator_frames.shape[1:]:
-        raise ValueError(
-            "RLDS and simulator frames must have the same spatial shape for side-by-side export. "
-            f"Got {rlds_frames.shape[1:]} vs {simulator_frames.shape[1:]}"
-        )
+    expected_shape = rlds_frames.shape[1:]
+    for frames in frame_sources[1:]:
+        if frames.shape[1:] != expected_shape:
+            raise ValueError(
+                "All frame sources must have the same spatial shape for comparison export. "
+                f"Got {expected_shape} vs {frames.shape[1:]}"
+            )
 
     frame_height = int(rlds_frames.shape[1])
     frame_width = int(rlds_frames.shape[2])
     canvas_height = frame_height + 66
-    canvas_width = frame_width * 2
+    panel_count = len(frame_sources)
+    canvas_width = frame_width * panel_count
     output_frames = []
     task_lines = textwrap.wrap(task_instruction, width=58)[:2]
 
     for frame_index in range(num_frames):
         canvas = np.full((canvas_height, canvas_width, 3), 245, dtype=np.uint8)
         canvas[:66, :] = 18
-        canvas[66:, :frame_width] = rlds_frames[frame_index]
-        canvas[66:, frame_width:] = simulator_frames[frame_index]
-        cv2.line(canvas, (frame_width, 0), (frame_width, canvas_height), (255, 255, 255), 2)
+        for panel_index, frames in enumerate(frame_sources):
+            start_x = panel_index * frame_width
+            end_x = start_x + frame_width
+            canvas[66:, start_x:end_x] = frames[frame_index]
+            if panel_index > 0:
+                cv2.line(canvas, (start_x, 0), (start_x, canvas_height), (255, 255, 255), 2)
 
-        left_lines = [left_label, f"frame {frame_index:04d}"]
-        right_lines = [right_label, f"frame {frame_index:04d}"]
         header_lines = [f"{dataset_name} episode {episode_index}", *task_lines]
 
-        _draw_text_block(
-            canvas,
-            left_lines,
-            origin_x=12,
-            origin_y=23,
-            font_scale=0.55,
-            color=(255, 255, 255),
-            line_height=20,
-            thickness=1,
-        )
-        _draw_text_block(
-            canvas,
-            right_lines,
-            origin_x=frame_width + 12,
-            origin_y=23,
-            font_scale=0.55,
-            color=(255, 255, 255),
-            line_height=20,
-            thickness=1,
-        )
+        for panel_index, label in enumerate(panel_labels):
+            _draw_text_block(
+                canvas,
+                [label, f"frame {frame_index:04d}"],
+                origin_x=panel_index * frame_width + 12,
+                origin_y=23,
+                font_scale=0.55,
+                color=(255, 255, 255),
+                line_height=20,
+                thickness=1,
+            )
         _draw_text_block(
             canvas,
             header_lines,
-            origin_x=max(12, frame_width - 180),
+            origin_x=max(12, canvas_width // 2 - 180),
             origin_y=23,
             font_scale=0.5,
             color=(170, 255, 170),
@@ -148,19 +165,23 @@ def _build_manifest(
     sim_camera_name: str,
     num_rlds_frames: int,
     num_simulator_frames: int,
+    num_masked_simulator_frames: int | None,
     num_output_frames: int,
     output_shape: tuple[int, int, int],
     source_demo_hdf5: str,
     demo_key: str,
+    masked_instances: list[str],
+    mask_rgb: str,
+    mask_alpha: float,
 ) -> dict[str, object]:
-    return {
+    manifest = {
         "dataset_name": dataset_name,
         "episode_index": episode_index,
         "task_instruction": task_instruction,
         "rlds_camera_name": rlds_camera_name,
         "sim_camera_name": sim_camera_name,
         "left_source": "rlds_saved_jpeg",
-        "right_source": "simulator_state_replay",
+        "middle_source": "simulator_state_replay",
         "num_rlds_frames": num_rlds_frames,
         "num_simulator_frames": num_simulator_frames,
         "num_output_frames": num_output_frames,
@@ -168,6 +189,18 @@ def _build_manifest(
         "source_demo_hdf5": source_demo_hdf5,
         "demo_key": demo_key,
     }
+    if masked_instances:
+        manifest["right_source"] = "masked_simulator_state_replay"
+        manifest["num_masked_simulator_frames"] = num_masked_simulator_frames
+        manifest["rgb_mask"] = {
+            "instance_names": list(masked_instances),
+            "mask_rgb": [int(channel) for channel in mask_rgb.split(",")],
+            "mask_alpha": float(mask_alpha),
+            "camera_names": [sim_camera_name],
+        }
+    else:
+        manifest["right_source"] = "simulator_state_replay"
+    return manifest
 
 
 def main() -> None:
@@ -180,6 +213,9 @@ def main() -> None:
     parser.add_argument("--rlds-camera-name", choices=["image", "wrist_image"], default="image")
     parser.add_argument("--sim-camera-name", choices=["agentview", "robot0_eye_in_hand"], default=None)
     parser.add_argument("--demo-search-root", action="append", default=[])
+    parser.add_argument("--masked-instance", action="append", default=[])
+    parser.add_argument("--mask-rgb", default="0,0,0")
+    parser.add_argument("--mask-alpha", type=float, default=1.0)
     parser.add_argument("--output-dir", default="outputs/libero_episode_sanity_check")
     parser.add_argument("--video-path")
     parser.add_argument("--fps", type=int, default=10)
@@ -213,6 +249,19 @@ def main() -> None:
         camera_width=camera_width,
         max_frames=args.max_frames,
     )
+    masked_render_result = None
+    if args.masked_instance:
+        masked_render_result = render_demo(
+            spec,
+            camera_name=sim_camera_name,
+            camera_height=camera_height,
+            camera_width=camera_width,
+            max_frames=args.max_frames,
+            masked_instance_names=args.masked_instance,
+            mask_rgb=args.mask_rgb,
+            mask_alpha=args.mask_alpha,
+            mask_camera_names=[sim_camera_name],
+        )
 
     if args.max_frames is not None:
         rlds_frames = rlds_frames[: args.max_frames]
@@ -220,11 +269,13 @@ def main() -> None:
     sanity_frames = make_sanity_check_frames(
         rlds_frames=rlds_frames,
         simulator_frames=render_result.frames,
+        masked_simulator_frames=None if masked_render_result is None else masked_render_result.frames,
         dataset_name=args.dataset_name,
         episode_index=args.episode_index,
         task_instruction=episode.task_instruction,
         left_label=f"RLDS {args.rlds_camera_name}",
-        right_label=f"SIM {sim_camera_name}",
+        middle_label=f"SIM {sim_camera_name}",
+        right_label=f"MASKED SIM {sim_camera_name}",
     )
 
     manifest = _build_manifest(
@@ -235,10 +286,16 @@ def main() -> None:
         sim_camera_name=sim_camera_name,
         num_rlds_frames=int(rlds_frames.shape[0]),
         num_simulator_frames=int(render_result.frames.shape[0]),
+        num_masked_simulator_frames=(
+            None if masked_render_result is None else int(masked_render_result.frames.shape[0])
+        ),
         num_output_frames=int(sanity_frames.shape[0]),
         output_shape=tuple(int(dim) for dim in sanity_frames.shape[1:]),
         source_demo_hdf5=str(spec.demo_hdf5_path),
         demo_key=spec.demo_key,
+        masked_instances=list(args.masked_instance),
+        mask_rgb=args.mask_rgb,
+        mask_alpha=args.mask_alpha,
     )
     manifest_path = write_frame_sequence(
         sanity_frames,

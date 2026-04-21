@@ -173,6 +173,27 @@ def test_make_sanity_check_frames_stacks_and_labels_frames() -> None:
     assert np.any(combined[:, :66] != 18)
 
 
+def test_make_sanity_check_frames_supports_optional_masked_panel() -> None:
+    left = np.zeros((2, 8, 10, 3), dtype=np.uint8)
+    middle = np.full((2, 8, 10, 3), 127, dtype=np.uint8)
+    right = np.full((2, 8, 10, 3), 255, dtype=np.uint8)
+
+    combined = make_sanity_check_frames(
+        rlds_frames=left,
+        simulator_frames=middle,
+        masked_simulator_frames=right,
+        dataset_name="libero_spatial_no_noops",
+        episode_index=0,
+        task_instruction="pick up the black bowl next to the cookie box and place it on the plate",
+    )
+
+    assert combined.shape == (2, 8 + 66, 30, 3)
+    assert np.all(combined[:, 66:, 1:9] == 0)
+    assert np.all(combined[:, 66:, 12:18] == 127)
+    assert np.all(combined[:, 66:, 22:28] == 255)
+    assert np.any(combined[:, :66] != 18)
+
+
 def test_parse_rgb_triplet_accepts_string_and_sequence() -> None:
     assert _parse_rgb_triplet("1,2,3") == (1, 2, 3)
     assert _parse_rgb_triplet([4, 5, 6]) == (4, 5, 6)
