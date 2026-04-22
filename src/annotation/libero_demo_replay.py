@@ -41,6 +41,7 @@ Direct-HDF5 usage:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 import contextlib
 import dataclasses
 import json
@@ -610,22 +611,40 @@ def _recorded_frames_for_camera(spec: DemoReplaySpec, camera_name: str) -> np.nd
     return None
 
 
-def render_demo(
+def _normalize_state_indices(
+    timestep_indices: Sequence[int],
+    *,
+    num_states: int,
+) -> list[int]:
+    normalized_indices: list[int] = []
+    for timestep_index in timestep_indices:
+        normalized_index = int(timestep_index)
+        if normalized_index < 0:
+            normalized_index += num_states
+        if normalized_index < 0 or normalized_index >= num_states:
+            raise IndexError(
+                f"Timestep index {timestep_index} is out of range for {num_states} saved states."
+            )
+        normalized_indices.append(normalized_index)
+    return normalized_indices
+
+
+def render_demo_timestep_indices(
     spec: DemoReplaySpec,
     *,
+    timestep_indices: Sequence[int],
     camera_name: str = "agentview",
     camera_height: int | None = None,
     camera_width: int | None = None,
-    frame_stride: int = 1,
-    max_frames: int | None = None,
     masked_instance_names: list[str] | tuple[str, ...] | None = None,
     mask_rgb: tuple[int, int, int] | list[int] | str = (0, 0, 0),
     mask_alpha: float = 1.0,
     mask_camera_names: list[str] | tuple[str, ...] | None = None,
 ) -> RenderResult:
-    if frame_stride <= 0:
-        raise ValueError("frame_stride must be positive.")
+    if not timestep_indices:
+        raise ValueError("Provide at least one timestep index to render.")
 
+    normalized_indices = _normalize_state_indices(timestep_indices, num_states=int(spec.states.shape[0]))
     recorded_frames = _recorded_frames_for_camera(spec, camera_name)
     if recorded_frames is not None:
         camera_height = camera_height or int(recorded_frames.shape[1])
@@ -657,13 +676,9 @@ def render_demo(
         env.reset_from_xml_string(_postprocess_demo_model_xml(spec.model_xml, libero_postprocess_model_xml))
         env.sim.reset()
 
-        selected_states = spec.states[::frame_stride]
-        if max_frames is not None:
-            selected_states = selected_states[:max_frames]
-
         frames = []
-        for frame_index, mujoco_state in enumerate(selected_states):
-            observation = env.set_init_state(mujoco_state)
+        for timestep_index in normalized_indices:
+            observation = env.set_init_state(spec.states[timestep_index])
             observation_key = f"{camera_name}_image"
             if observation_key not in observation:
                 available = sorted(key for key in observation if key.endswith("_image"))
@@ -673,8 +688,8 @@ def render_demo(
 
             frame = np.asarray(observation[observation_key], dtype=np.uint8)
             frames.append(frame)
-            if recorded_frames is not None and frame_index < len(recorded_frames):
-                recorded_frame = np.asarray(recorded_frames[frame_index], dtype=np.uint8)
+            if recorded_frames is not None and timestep_index < len(recorded_frames):
+                recorded_frame = np.asarray(recorded_frames[timestep_index], dtype=np.uint8)
                 if recorded_frame.shape == frame.shape:
                     error = np.abs(recorded_frame.astype(np.int16) - frame.astype(np.int16)).mean()
                     frame_errors.append(float(error))
@@ -689,6 +704,37 @@ def render_demo(
         camera_name=camera_name,
         mean_abs_error=mean_abs_error,
         max_abs_error=max_abs_error,
+    )
+
+
+def render_demo(
+    spec: DemoReplaySpec,
+    *,
+    camera_name: str = "agentview",
+    camera_height: int | None = None,
+    camera_width: int | None = None,
+    frame_stride: int = 1,
+    max_frames: int | None = None,
+    masked_instance_names: list[str] | tuple[str, ...] | None = None,
+    mask_rgb: tuple[int, int, int] | list[int] | str = (0, 0, 0),
+    mask_alpha: float = 1.0,
+    mask_camera_names: list[str] | tuple[str, ...] | None = None,
+) -> RenderResult:
+    if frame_stride <= 0:
+        raise ValueError("frame_stride must be positive.")
+    timestep_indices = list(range(0, int(spec.states.shape[0]), frame_stride))
+    if max_frames is not None:
+        timestep_indices = timestep_indices[:max_frames]
+    return render_demo_timestep_indices(
+        spec,
+        timestep_indices=timestep_indices,
+        camera_name=camera_name,
+        camera_height=camera_height,
+        camera_width=camera_width,
+        masked_instance_names=masked_instance_names,
+        mask_rgb=mask_rgb,
+        mask_alpha=mask_alpha,
+        mask_camera_names=mask_camera_names,
     )
 
 

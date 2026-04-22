@@ -9,6 +9,7 @@ The tools here are for three closely related jobs:
 - compare stored dataset images against fresh simulator renders
 - inspect how LIBERO resolves BDDL tasks into concrete Python object classes
 - inspect world-vs-robot coordinate frames before adding new spatial predicates
+- evaluate predicates and derive goal-centered metadata from saved demo timesteps
 
 ## Environment
 
@@ -187,7 +188,83 @@ PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
   --output-dir outputs/libero_coordinate_frames/ep0_marker_dots
 ```
 
-### `annotation.libero_predicates_test`
+### `annotation.libero_predicate_annotation`
+
+Simulator-backed predicate evaluation and annotation pipeline for saved demos.
+
+It supports two workflows:
+
+- evaluate one predicate with concrete scene-instance arguments at any saved timestep
+- annotate the final demo state by extracting all arguments that appear in the
+  BDDL goal expression and enumerating which unary / binary predicates hold for
+  each of those focus objects
+- compare the first and last saved demo states and highlight which predicate
+  truth values changed for goal-relevant objects
+
+The automatic annotation pass uses the same LIBERO runtime object wrappers as
+normal goal checking, so relations are evaluated against the restored simulator
+state rather than inferred from dataset metadata alone.
+
+Single predicate example:
+
+```bash
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+  -m annotation.libero_predicate_annotation evaluate \
+  --dataset-name libero_spatial_no_noops \
+  --data-dir data/libero/raw \
+  --episode-index 0 \
+  --predicate on \
+  --predicate-args porcelain_mug_1 plate_1
+```
+
+Goal-centered final-state annotation example:
+
+```bash
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+  -m annotation.libero_predicate_annotation annotate-goal-final-state \
+  --dataset-name libero_spatial_no_noops \
+  --data-dir data/libero/raw \
+  --episode-index 0 \
+  --output-json outputs/libero_predicate_annotations/ep0.json
+```
+
+First-vs-last truth-value diff example:
+
+```bash
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+  -m annotation.libero_predicate_annotation compare-goal-first-last-state \
+  --dataset-name libero_spatial_no_noops \
+  --data-dir data/libero/raw \
+  --episode-index 0 \
+  --output-json outputs/libero_predicate_annotations/ep0_first_last_diff.json
+```
+
+### `annotation.libero_predicate_change_visualization`
+
+Static visualization for the first-vs-last predicate diff workflow.
+
+It renders:
+
+- frame `0` on the left
+- frame `-1` on the right
+- a table underneath with one row per changed predicate and the truth values at
+  the first and last saved states
+
+If the changed-predicate table is long, the tool writes multiple PNG pages while
+repeating the same frame comparison header.
+
+Example:
+
+```bash
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+  -m annotation.libero_predicate_change_visualization \
+  --dataset-name libero_spatial_no_noops \
+  --data-dir data/libero/raw \
+  --episode-index 0 \
+  --output-dir outputs/libero_predicate_change_visualization/ep0
+```
+
+### `annotation.testing.libero_predicates_test`
 
 Lightweight regression coverage for custom LIBERO predicate helpers added in the
 submodule.
