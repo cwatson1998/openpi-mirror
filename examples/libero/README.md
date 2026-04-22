@@ -110,6 +110,8 @@ The most useful entrypoints are:
   replay against masked simulator replay only
 - `annotation.libero_bddl_object_stack_inspector`: inspect how BDDL object
   category names resolve to concrete LIBERO / robosuite classes
+- `annotation.libero_coordinate_frame_visualization`: render MuJoCo marker dots
+  showing world and robot-base coordinate frames
 
 The masking path is segmentation-backed and can affect policy-facing RGB
 observations as well as human-visible replay videos. The eval entrypoint
@@ -122,6 +124,32 @@ observations as well as human-visible replay videos. The eval entrypoint
 
 For the full masking workflow, including replay examples, see
 [`MASKING_README.md`](../../MASKING_README.md).
+
+## Predicate Work
+
+If you are experimenting with new LIBERO BDDL predicates, the main code path is:
+
+- `third_party/libero/libero/libero/envs/predicates/base_predicates.py`
+- `third_party/libero/libero/libero/envs/predicates/__init__.py`
+- `third_party/libero/libero/libero/envs/object_states/base_object_states.py`
+
+The current spatial predicates exposed to BDDL use hyphenated planning-style
+names:
+
+- `left-of`
+- `right-of`
+- `in-front-of`
+- `behind`
+- `above`
+- `below`
+- `near`
+
+The annotation toolkit includes:
+
+- `annotation.libero_coordinate_frame_visualization` for visualizing world and
+  robot-base frames in a real scene
+- `src/annotation/libero_predicates_test.py` for lightweight predicate
+  regression checks outside the full simulator stack
 
 ## Results
 

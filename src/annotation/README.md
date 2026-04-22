@@ -8,6 +8,7 @@ The tools here are for three closely related jobs:
 - replay a stored LIBERO demo by restoring MuJoCo simulator state
 - compare stored dataset images against fresh simulator renders
 - inspect how LIBERO resolves BDDL tasks into concrete Python object classes
+- inspect world-vs-robot coordinate frames before adding new spatial predicates
 
 ## Environment
 
@@ -158,6 +159,47 @@ This is the best starting point if you are trying to answer questions like:
 - "what class implements `plate`?"
 - "what does a predicate actually receive at runtime?"
 - "is this resolution global, or problem-dependent?"
+
+### `annotation.libero_coordinate_frame_visualization`
+
+Injects small MuJoCo marker dots directly into the scene XML before rendering,
+instead of drawing 2D overlays afterward.
+
+It renders:
+
+- a world-frame marker cluster near the robot base
+- a robot-base-frame marker cluster attached to the robot root body
+
+This is useful when you are deciding how to define spatial predicates such as
+`left-of`, `right-of`, or future robot-relative relations.
+
+Example:
+
+```bash
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+  -m annotation.libero_coordinate_frame_visualization \
+  --dataset-name libero_spatial_no_noops \
+  --data-dir data/libero/raw \
+  --episode-index 0 \
+  --demo-search-root third_party/libero/libero/datasets \
+  --camera-name agentview \
+  --frame-index 0 \
+  --output-dir outputs/libero_coordinate_frames/ep0_marker_dots
+```
+
+### `annotation.libero_predicates_test`
+
+Lightweight regression coverage for custom LIBERO predicate helpers added in the
+submodule.
+
+These tests are intentionally pure Python. They do not build a full simulator;
+they just verify predicate semantics and registry-facing helper behavior.
+
+This is the fastest check to run after changing:
+
+- `third_party/libero/libero/libero/envs/predicates/base_predicates.py`
+- `third_party/libero/libero/libero/envs/predicates/__init__.py`
+- `third_party/libero/libero/libero/envs/object_states/base_object_states.py`
 
 ## Related Docs
 

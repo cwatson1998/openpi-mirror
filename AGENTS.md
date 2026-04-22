@@ -22,6 +22,8 @@ Treat `third_party/` as vendored code. Avoid editing it unless the task explicit
 - `src/openpi/training/config.py`: train config definitions and named configs
 - `src/openpi/training/data_loader.py`: dataset wiring, including LIBERO prompt selection
 - `src/openpi/serving/websocket_policy_server.py`: websocket serving path
+- `src/annotation/libero_coordinate_frame_visualization.py`: simulator-native MuJoCo marker visualization of world and robot-base frames
+- `src/annotation/libero_predicates_test.py`: lightweight regression checks for LIBERO predicate helpers added in the submodule
 - `src/annotation/libero_demo_replay.py`: simulator-backed LIBERO replay and path-resolution utilities
 - `src/annotation/libero_episode_sanity_check.py`: RLDS-vs-simulator-vs-masked-simulator comparison export
 - `src/annotation/libero_bddl_object_stack_inspector.py`: BDDL object-category -> implementation-class inspector
@@ -104,6 +106,14 @@ For masking / segmentation work:
 - `examples/libero/main.py` can use masked observations for policy eval when `--mask-instances-csv` is provided
 - `src/annotation/libero_demo_replay.py` can render masked simulator replays with `--masked-instance`
 - `src/annotation/libero_masked_replay_visualization.py` is the quickest way to inspect original vs masked replay side by side
+
+For BDDL predicate / spatial-relation work:
+
+- runtime predicate implementations live in `third_party/libero/libero/libero/envs/predicates/base_predicates.py`
+- BDDL-facing predicate names are registered in `third_party/libero/libero/libero/envs/predicates/__init__.py`
+- object and site semantics used by those predicates live in `third_party/libero/libero/libero/envs/object_states/base_object_states.py`
+- the current spatial predicate names exposed to BDDL are hyphenated planning-style names such as `left-of`, `right-of`, and `in-front-of`, plus `near`
+- `src/annotation/libero_coordinate_frame_visualization.py` is the quickest way to inspect world-vs-robot frame orientation before adding more robot-relative predicates
 
 Two local-eval-specific gotchas matter in this repo right now:
 
