@@ -87,8 +87,15 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # Optional field name to read directly from the LeRobot dataset's `meta/tasks.jsonl`.
+    # This supports dataset-native prompt variants such as `task_description` or
+    # `task_description_1` while keeping the canonical `task` field untouched for
+    # backwards compatibility. When unset, training falls back to the standard `task`.
+    task_description_field: str | None = None
     # Optional JSON file containing alternative task descriptions to use as prompts instead of the dataset task text.
     # This is keyed by task instruction via `src/openpi/training/libero_logic.py`.
+    # When both this path and `task_description_field` are provided, this external
+    # override file takes precedence so existing logic-prompt configs keep their behavior.
     task_description_path: str | None = None
 
     # If true, will disable syncing the dataset from the Hugging Face Hub. Allows training on local-only datasets.
@@ -277,6 +284,10 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     # Optional JSON file containing alternate task descriptions (for example logic-based descriptions).
     # If provided, training will use these descriptions as prompts instead of the dataset's natural-language tasks.
     task_description_path: str | None = None
+    # Optional field name inside the LeRobot dataset's `meta/tasks.jsonl` records to use as
+    # the prompt source. This lets custom datasets ship alternate prompt variants such as
+    # `task_description` / `task_description_1` directly inside the dataset metadata.
+    task_description_field: str | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -341,6 +352,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            task_description_field=self.task_description_field,
             task_description_path=self.task_description_path,
             task_filters=libero_utils.resolve_task_filters(
                 task_suite_name=self.task_suite_name,

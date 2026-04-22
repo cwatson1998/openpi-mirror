@@ -9,14 +9,7 @@ Use this when you forget where `model_file` or the BDDL came from, or when
 debugging why a replay command picked a particular demo file.
 
 Example usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_resolution_inspector \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --demo-search-root third_party/libero/libero/datasets \\
-      --output-json outputs/libero_resolution_ep0.json
+    PYTHONPATH=src:third_party/libero /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_resolution_inspector --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --demo-search-root third_party/libero/libero/datasets --output-json outputs/libero_resolution_ep0.json
 """
 
 from __future__ import annotations

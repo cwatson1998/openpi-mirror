@@ -141,11 +141,21 @@ Current LIBERO work in this repo uses two prompt styles:
 
 Be precise about where prompt behavior comes from:
 
+- LeRobot datasets may now carry alternate prompt fields directly in `meta/tasks.jsonl`, for example `task_description` or `task_description_1`, alongside the canonical `task` field
+- training can read those dataset-native prompt variants via `data.task_description_field`; when unset, training continues to use the canonical LeRobot `task` field
 - training-time LIBERO prompt semantics come from the selected config, especially `task_description_path`, not from the experiment name or checkpoint folder name
+- if both `data.task_description_field` and `task_description_path` are set, `task_description_path` wins; this preserves the existing logic-prompt override behavior
 - eval-time prompt semantics currently include one naming heuristic: `scripts/submit_libero_eval_slurm.sh` and `examples/libero/eval_checkpoint.slurm` auto-set `PROMPT_OVERRIDE_FILE=data/libero/libero_10_logic_descriptions.json` when `POLICY_CONFIG` contains `_logic`
 - do not extend that heuristic to `EXP_NAME`, checkpoint leaf names, or other filenames; if behavior matters, pass `--prompt-override-file` explicitly or wire it through config/CLI fields with explicit semantics
 
 If you touch LIBERO prompt plumbing, make sure task filtering still works correctly with the logic description file. The relevant regression coverage lives in `src/openpi/training/data_loader_test.py`.
+
+When creating new LeRobot datasets for OpenPI training:
+
+- keep the canonical `task` field in `meta/tasks.jsonl` for backwards compatibility, filtering, and external tooling
+- store any alternate prompt variants as additional string fields on the same task records, not by replacing `task`
+- prefer dataset-native prompt fields for new datasets when you want the prompt variant to travel with the dataset itself
+- prefer `task_description_path` only for external override layers such as the current LIBERO logic-prompt workflow
 
 W&B support is wired through both training and eval:
 

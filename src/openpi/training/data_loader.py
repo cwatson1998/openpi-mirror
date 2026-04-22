@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import json
 import multiprocessing
 import os
 import typing
@@ -23,13 +24,55 @@ def _normalize_task_name(task_name: str) -> str:
     return " ".join(task_name.strip().replace("_", " ").split()).casefold()
 
 
+def _load_lerobot_task_metadata(dataset_meta: lerobot_dataset.LeRobotDatasetMetadata) -> dict[int, dict[str, str]]:
+    """Load the full LeRobot task records, preserving any alternate prompt fields.
+
+    LeRobot exposes `dataset_meta.tasks` as a simple `task_index -> task` mapping, which is
+    enough for the default prompt path. For custom datasets we also want to support
+    dataset-native prompt variants (for example `task_description_1`) stored alongside the
+    canonical `task` string in `meta/tasks.jsonl`. Existing datasets remain compatible
+    because we synthesize a minimal record when only the canonical field is present.
+    """
+
+    tasks_path = dataset_meta.root / "meta" / "tasks.jsonl"
+    if not tasks_path.exists():
+        return {int(task_index): {"task": task} for task_index, task in dataset_meta.tasks.items()}
+
+    task_metadata: dict[int, dict[str, str]] = {}
+    for line_number, line in enumerate(tasks_path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+
+        record = json.loads(line)
+        if "task_index" not in record:
+            raise ValueError(f"Missing `task_index` in {tasks_path}:{line_number}")
+
+        task_index = int(record["task_index"])
+        task = record.get("task")
+        if not isinstance(task, str):
+            raise ValueError(f"Missing string `task` in {tasks_path}:{line_number}")
+
+        string_fields = {key: value for key, value in record.items() if isinstance(value, str)}
+        string_fields["task"] = task
+        task_metadata[task_index] = string_fields
+
+    # Preserve backwards compatibility with older datasets even if their `tasks.jsonl`
+    # omits entries that LeRobot already surfaced through `dataset_meta.tasks`.
+    for task_index, task in dataset_meta.tasks.items():
+        task_metadata.setdefault(int(task_index), {"task": task})
+
+    return task_metadata
+
+
 def _select_task_prompts(
-    dataset_tasks: dict[int, str],
+    dataset_task_metadata: dict[int, dict[str, str]],
     *,
     task_filters: Sequence[str],
+    task_description_field: str | None,
     task_description_path: str | None,
     prompt_from_task: bool,
 ) -> dict[int, str] | None:
+    dataset_tasks = {task_index: fields["task"] for task_index, fields in dataset_task_metadata.items()}
     selected_tasks = dataset_tasks
     if task_filters:
         allowed_tasks = {_normalize_task_name(task) for task in task_filters}
@@ -41,6 +84,23 @@ def _select_task_prompts(
 
     if task_description_path is not None:
         return libero_logic.build_task_prompt_map_from_dataset_tasks(selected_tasks, task_description_path)
+
+    if task_description_field is not None:
+        missing = [
+            dataset_tasks[task_index]
+            for task_index in selected_tasks
+            if task_description_field not in dataset_task_metadata[task_index]
+        ]
+        if missing:
+            raise ValueError(
+                f"Task description field `{task_description_field}` was not found for all selected dataset tasks.\n"
+                "Missing values for:\n"
+                + "\n".join(f"  - {task}" for task in missing)
+            )
+
+        return {
+            int(task_index): dataset_task_metadata[task_index][task_description_field] for task_index in selected_tasks
+        }
 
     if prompt_from_task:
         return selected_tasks
@@ -121,12 +181,13 @@ def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseMod
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, local_files_only=data_config.local_files_only)
+    dataset_task_metadata = _load_lerobot_task_metadata(dataset_meta)
     episode_indices = None
     if data_config.task_filters:
-        available_task_names = {task.casefold(): task for task in dataset_meta.tasks.values()}
+        available_task_names = {fields["task"].casefold(): fields["task"] for fields in dataset_task_metadata.values()}
         missing_tasks = sorted(task for task in data_config.task_filters if task.casefold() not in available_task_names)
         if missing_tasks:
-            available = "\n".join(f"  - {task}" for task in dataset_meta.tasks.values())
+            available = "\n".join(f"  - {task}" for task in available_task_names.values())
             raise ValueError(
                 f"Task filters not found in dataset {repo_id}: {missing_tasks}\nAvailable tasks:\n{available}"
             )
@@ -145,8 +206,9 @@ def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseMod
     )
 
     task_prompts = _select_task_prompts(
-        dataset_meta.tasks,
+        dataset_task_metadata,
         task_filters=data_config.task_filters,
+        task_description_field=data_config.task_description_field,
         task_description_path=data_config.task_description_path,
         prompt_from_task=data_config.prompt_from_task,
     )

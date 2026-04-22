@@ -19,25 +19,10 @@ This is intended to make frame relationships easier to inspect before adding
 robot-relative predicates such as "left of".
 
 RLDS-backed example:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_coordinate_frame_visualization \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --demo-search-root third_party/libero/libero/datasets \\
-      --camera-name agentview \\
-      --frame-index 0 \\
-      --output-dir outputs/libero_coordinate_frames/ep0_marker_dots
+    PYTHONPATH=src:third_party/libero /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_coordinate_frame_visualization --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --demo-search-root third_party/libero/libero/datasets --camera-name agentview --frame-index 0 --output-dir outputs/libero_coordinate_frames/ep0_marker_dots
 
 Direct source-demo example:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_coordinate_frame_visualization \\
-      --source-demo-file third_party/libero/libero/datasets/libero_spatial/<task>_demo.hdf5 \\
-      --demo-key demo_40 \\
-      --camera-name agentview \\
-      --output-dir outputs/libero_coordinate_frames/manual_demo_marker_dots
+    PYTHONPATH=src:third_party/libero /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_coordinate_frame_visualization --source-demo-file third_party/libero/libero/datasets/libero_spatial/<task>_demo.hdf5 --demo-key demo_40 --camera-name agentview --output-dir outputs/libero_coordinate_frames/manual_demo_marker_dots
 """
 
 from __future__ import annotations

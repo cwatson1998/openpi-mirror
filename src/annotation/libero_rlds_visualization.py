@@ -6,15 +6,7 @@ RLDS observations and writes them out as PNG frames plus an optional video.
 Use this when you want to inspect exactly what the RLDS dataset stores.
 
 Example usage:
-    PYTHONPATH=src \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_rlds_visualization \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --camera-name image \\
-      --output-dir outputs/libero_rlds_ep0_image \\
-      --video-path outputs/libero_rlds_ep0_image.mp4
+    PYTHONPATH=src /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_rlds_visualization --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --camera-name image --output-dir outputs/libero_rlds_ep0_image --video-path outputs/libero_rlds_ep0_image.mp4
 """
 
 from __future__ import annotations

@@ -15,27 +15,10 @@ This is the file to read if you want to understand:
 - how the source HDF5 `model_file` XML is fed back into LIBERO for replay
 
 Example usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_demo_replay \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --demo-search-root third_party/libero/libero/datasets \\
-      --camera-width 256 \\
-      --camera-height 256 \\
-      --masked-instance akita_black_bowl_1 \\
-      --mask-rgb 0,0,0 \\
-      --output-dir outputs/libero_demo_replay/ep0_256 \\
-      --video-path outputs/libero_demo_replay/ep0_256.mp4
+    PYTHONPATH=src:third_party/libero /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_demo_replay --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --demo-search-root third_party/libero/libero/datasets --camera-width 256 --camera-height 256 --masked-instance akita_black_bowl_1 --mask-rgb 0,0,0 --output-dir outputs/libero_demo_replay/ep0_256 --video-path outputs/libero_demo_replay/ep0_256.mp4
 
 Direct-HDF5 usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_demo_replay \\
-      --source-demo-file third_party/libero/libero/datasets/libero_spatial/<task>_demo.hdf5 \\
-      --demo-key demo_40 \\
-      --output-dir outputs/libero_demo_replay/manual_demo
+    PYTHONPATH=src:third_party/libero /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_demo_replay --source-demo-file third_party/libero/libero/datasets/libero_spatial/<task>_demo.hdf5 --demo-key demo_40 --output-dir outputs/libero_demo_replay/manual_demo
 """
 
 from __future__ import annotations

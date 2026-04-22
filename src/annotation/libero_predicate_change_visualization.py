@@ -12,13 +12,7 @@ If the table is too long for one page, the tool emits multiple PNG pages while
 repeating the same frame comparison header on each page.
 
 Example usage:
-    PYTHONPATH=src:third_party/libero \\
-      $HOME/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_predicate_change_visualization \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --output-dir outputs/libero_predicate_change_visualization/ep0
+    PYTHONPATH=src:third_party/libero $HOME/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_predicate_change_visualization --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --output-dir outputs/libero_predicate_change_visualization/ep0
 
 Note: use the conda env ($HOME/miniconda3/envs/instructvla_libero/bin/python) rather than
 examples/libero/.venv/bin/python when loading RLDS/TFDS datasets, because the latter does

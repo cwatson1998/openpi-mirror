@@ -6,17 +6,7 @@ demo twice:
 - right: simulator replay with selected instance masks applied to RGB
 
 Example usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python \\
-      -m annotation.libero_masked_replay_visualization \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --demo-search-root third_party/libero/libero/datasets \\
-      --masked-instance akita_black_bowl_1 \\
-      --mask-rgb 0,0,0 \\
-      --output-dir outputs/libero_masked_replay/ep0 \\
-      --video-path outputs/libero_masked_replay/ep0.mp4
+    PYTHONPATH=src:third_party/libero /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python -m annotation.libero_masked_replay_visualization --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --demo-search-root third_party/libero/libero/datasets --masked-instance akita_black_bowl_1 --mask-rgb 0,0,0 --output-dir outputs/libero_masked_replay/ep0 --video-path outputs/libero_masked_replay/ep0.mp4
 """
 
 from __future__ import annotations

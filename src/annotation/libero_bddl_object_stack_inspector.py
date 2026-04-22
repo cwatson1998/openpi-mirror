@@ -9,23 +9,13 @@ It does not need to run a rollout, but it does import LIBERO / robosuite class
 definitions, so use the LIBERO Python 3.10 environment.
 
 Single-file usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python \\
-      -m annotation.libero_bddl_object_stack_inspector \\
-      --bddl-path third_party/libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl
+    PYTHONPATH=src:third_party/libero /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python -m annotation.libero_bddl_object_stack_inspector --bddl-path third_party/libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl
 
 Directory usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python \\
-      -m annotation.libero_bddl_object_stack_inspector \\
-      --bddl-path third_party/libero/libero/libero/bddl_files/libero_spatial
+    PYTHONPATH=src:third_party/libero /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python -m annotation.libero_bddl_object_stack_inspector --bddl-path third_party/libero/libero/libero/bddl_files/libero_spatial
 
 JSON output:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python \\
-      -m annotation.libero_bddl_object_stack_inspector \\
-      --bddl-path third_party/libero/libero/libero/bddl_files/libero_spatial \\
-      --output-json outputs/libero_bddl_object_stack.json
+    PYTHONPATH=src:third_party/libero /home/christopher/Documents/openpi-finetune/openpi/examples/libero/.venv/bin/python -m annotation.libero_bddl_object_stack_inspector --bddl-path third_party/libero/libero/libero/bddl_files/libero_spatial --output-json outputs/libero_bddl_object_stack.json
 """
 
 from __future__ import annotations

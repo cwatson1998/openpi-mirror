@@ -10,28 +10,10 @@ the dataset images for a specific episode. The output adds labels and frame
 numbers directly onto the composed frames.
 
 Example usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_episode_sanity_check \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --demo-search-root third_party/libero/libero/datasets \\
-      --output-dir outputs/libero_episode_sanity_check/ep0 \\
-      --video-path outputs/libero_episode_sanity_check/ep0.mp4
+    PYTHONPATH=src:third_party/libero /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_episode_sanity_check --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --demo-search-root third_party/libero/libero/datasets --output-dir outputs/libero_episode_sanity_check/ep0 --video-path outputs/libero_episode_sanity_check/ep0.mp4
 
 Masked comparison usage:
-    PYTHONPATH=src:third_party/libero \\
-      /home/christopher/miniconda3/envs/instructvla_libero/bin/python \\
-      -m annotation.libero_episode_sanity_check \\
-      --dataset-name libero_spatial_no_noops \\
-      --data-dir data/libero/raw \\
-      --episode-index 0 \\
-      --demo-search-root third_party/libero/libero/datasets \\
-      --masked-instance akita_black_bowl_1 \\
-      --mask-rgb 0,0,0 \\
-      --output-dir outputs/libero_episode_sanity_check/ep0_masked \\
-      --video-path outputs/libero_episode_sanity_check/ep0_masked.mp4
+    PYTHONPATH=src:third_party/libero /home/christopher/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_episode_sanity_check --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --demo-search-root third_party/libero/libero/datasets --masked-instance akita_black_bowl_1 --mask-rgb 0,0,0 --output-dir outputs/libero_episode_sanity_check/ep0_masked --video-path outputs/libero_episode_sanity_check/ep0_masked.mp4
 """
 
 from __future__ import annotations

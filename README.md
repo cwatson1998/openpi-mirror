@@ -139,6 +139,39 @@ uv run examples/libero/convert_libero_data_to_lerobot.py \
   --task_split train
 ```
 
+If your LeRobot dataset needs multiple prompt variants, keep the canonical `task`
+field in `meta/tasks.jsonl` and add extra string fields such as
+`task_description` or `task_description_1` to each task record. OpenPI keeps using
+`task` by default, but you can opt into one of the alternate fields with
+`data.task_description_field=<field_name>` while preserving backwards compatibility
+with existing datasets and configs.
+
+Prompt-selection precedence for training is:
+
+1. `data.task_description_path`: external override file keyed by the canonical task text
+2. `data.task_description_field`: dataset-native alternate field from `meta/tasks.jsonl`
+3. `task`: the default LeRobot task string
+
+That means the existing logic-prompt configs keep their current behavior, while
+new datasets can ship alternate prompt variants directly inside the dataset.
+
+An example `meta/tasks.jsonl` record with an alternate prompt field looks like:
+
+```json
+{"task_index": 0, "task": "pick up the ketchup and place it in the basket", "task_description_1": "(And (In ketchup_1 basket_1_contain_region))"}
+```
+
+And an example training override that uses that field looks like:
+
+```bash
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi0_fast_libero \
+  --exp-name=my_alt_prompt_run \
+  --overwrite \
+  --data.repo_id local/my_dataset \
+  --data.base_config.local_files_only=true \
+  --data.task_description_field task_description_1
+```
+
 ### 2. Defining training configs and running training
 
 To fine-tune a base model on your own data, you need to define configs for data processing and training. We provide example configs with detailed comments for Libero below, which you can modify for your own dataset:

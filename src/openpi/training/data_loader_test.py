@@ -2,6 +2,7 @@ import dataclasses
 import json
 
 import jax
+import pytest
 
 from openpi.models import pi0
 from openpi.training import config as _config
@@ -109,12 +110,48 @@ def test_select_task_prompts_uses_filtered_libero_subset(tmp_path):
 
     prompt_map = _data_loader._select_task_prompts(  # noqa: SLF001
         {
-            0: "turn on the stove and put the moka pot on it",
-            1: "pick up the ketchup and place it in the basket",
+            0: {"task": "turn on the stove and put the moka pot on it"},
+            1: {"task": "pick up the ketchup and place it in the basket"},
         },
         task_filters=("turn on the stove and put the moka pot on it",),
+        task_description_field=None,
         task_description_path=str(path),
         prompt_from_task=True,
     )
 
     assert prompt_map == {0: "(And (Turnon flat_stove) (On moka_pot flat_stove))"}
+
+
+def test_select_task_prompts_uses_dataset_task_description_field():
+    prompt_map = _data_loader._select_task_prompts(  # noqa: SLF001
+        {
+            0: {
+                "task": "turn on the stove and put the moka pot on it",
+                "task_description": "natural language but stored in metadata",
+                "task_description_1": "(And (Turnon flat_stove) (On moka_pot flat_stove))",
+            },
+            1: {
+                "task": "pick up the ketchup and place it in the basket",
+                "task_description_1": "(And (In ketchup_1 basket_1_contain_region))",
+            },
+        },
+        task_filters=("turn on the stove and put the moka pot on it",),
+        task_description_field="task_description_1",
+        task_description_path=None,
+        prompt_from_task=True,
+    )
+
+    assert prompt_map == {0: "(And (Turnon flat_stove) (On moka_pot flat_stove))"}
+
+
+def test_select_task_prompts_raises_when_dataset_task_description_field_is_missing():
+    with pytest.raises(ValueError, match="Task description field `task_description_1`"):
+        _data_loader._select_task_prompts(  # noqa: SLF001
+            {
+                0: {"task": "turn on the stove and put the moka pot on it"},
+            },
+            task_filters=(),
+            task_description_field="task_description_1",
+            task_description_path=None,
+            prompt_from_task=True,
+        )
