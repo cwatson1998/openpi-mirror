@@ -148,7 +148,7 @@ The annotation toolkit includes:
 
 - `annotation.libero_coordinate_frame_visualization` for visualizing world and
   robot-base frames in a real scene
-- `src/annotation/libero_predicates_test.py` for lightweight predicate
+- `src/annotation/testing/libero_predicates_test.py` for lightweight predicate
   regression checks outside the full simulator stack
 
 ## Results

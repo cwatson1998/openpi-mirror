@@ -224,6 +224,10 @@ that handles the full lifecycle locally:
 - tears the server down
 - repeats for the second checkpoint
 
+The runner now uses a hardened server cleanup path. If the policy server does
+not exit promptly after `SIGINT`, it escalates to `SIGTERM` and then `SIGKILL`
+instead of hanging forever between checkpoints.
+
 Launch it in a detached tmux session:
 
 ```bash
@@ -245,3 +249,31 @@ The sequential runner writes:
 - per-checkpoint server logs: `logs/libero_eval/<run-id>/*_server.log`
 - per-checkpoint eval logs: `logs/libero_eval/<run-id>/*_eval.log`
 - eval outputs: `data/libero/evals/<run-id>/<checkpoint-short-name>/`
+
+## Restart Only One Checkpoint
+
+If the pair run is interrupted after one checkpoint completes, you can rerun
+just the remaining checkpoint with `--only`.
+
+Rerun only the second checkpoint:
+
+```bash
+RUN_ID="$(date +%Y%m%d_%H%M%S)_libero10_logic_lora_secondonly"
+
+tmux new-session -d -s libero10-logic-lora-second \
+  "cd '$PWD' && ./scripts/eval_libero10_logic_lora_pair.sh \
+    --run-id '${RUN_ID}' \
+    --only lora-from-libero-ckpt"
+tmux set-option -t libero10-logic-lora-second remain-on-exit on
+```
+
+You can also rerun only the first checkpoint:
+
+```bash
+./scripts/eval_libero10_logic_lora_pair.sh --only lora --run-id <run-id>
+```
+
+Valid values are:
+
+- `lora`
+- `lora-from-libero-ckpt`
