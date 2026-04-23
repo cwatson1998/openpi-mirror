@@ -25,6 +25,7 @@ Treat `third_party/` as vendored code. Avoid editing it unless the task explicit
 - `src/annotation/libero_coordinate_frame_visualization.py`: simulator-native MuJoCo marker visualization of world and robot-base frames
 - `src/annotation/testing/libero_predicates_test.py`: lightweight regression checks for LIBERO predicate helpers added in the submodule
 - `src/annotation/libero_demo_replay.py`: simulator-backed LIBERO replay and path-resolution utilities
+- `examples/libero/convert_libero_data_to_lerobot.py`: RLDS -> LeRobot conversion, including optional next-object-highlighting rerenders
 - `src/annotation/libero_episode_sanity_check.py`: RLDS-vs-simulator-vs-masked-simulator comparison export
 - `src/annotation/libero_bddl_object_stack_inspector.py`: BDDL object-category -> implementation-class inspector
 - `src/annotation/README.md`: overview of the annotation and replay toolchain
@@ -106,6 +107,12 @@ For masking / segmentation work:
 - `examples/libero/main.py` can use masked observations for policy eval when `--mask-instances-csv` is provided
 - `src/annotation/libero_demo_replay.py` can render masked simulator replays with `--masked-instance`
 - `src/annotation/libero_masked_replay_visualization.py` is the quickest way to inspect original vs masked replay side by side
+
+For simulator-backed dataset generation:
+
+- `examples/libero/convert_libero_data_to_lerobot.py --next-object-highlighting` re-renders LIBERO RGB observations with the nearest future grasp target highlighted
+- that path depends on `src/annotation/libero_demo_replay.py` to resolve RLDS episodes back to source HDF5 demos and restore saved MuJoCo `states`
+- it requires the original LIBERO source HDF5 demos under `third_party/libero/libero/datasets` or another explicit `--demo-search-roots` path; raw RLDS shards alone are not enough
 
 For BDDL predicate / spatial-relation work:
 

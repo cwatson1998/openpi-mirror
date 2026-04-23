@@ -125,6 +125,69 @@ observations as well as human-visible replay videos. The eval entrypoint
 For the full masking workflow, including replay examples, see
 [`MASKING_README.md`](../../MASKING_README.md).
 
+## Dataset Conversion
+
+The training pipeline consumes LeRobot datasets, not raw RLDS directly. The
+main conversion entrypoint is:
+
+- [`examples/libero/convert_libero_data_to_lerobot.py`](convert_libero_data_to_lerobot.py)
+
+The standard path is still:
+
+```bash
+uv run examples/libero/convert_libero_data_to_lerobot.py \
+  --data_dir data/libero/raw \
+  --repo_name local/libero_spatial
+```
+
+That writes the usual LeRobot image keys:
+
+- `image`
+- `wrist_image`
+- `state`
+- `actions`
+
+so the existing training configs and data loader keep working unchanged.
+
+### Next Object Highlighting
+
+`convert_libero_data_to_lerobot.py` also supports a simulator-backed
+`--next-object-highlighting` transform for creating new LIBERO datasets from old
+ones.
+
+When enabled, the converter:
+
+1. resolves each RLDS episode back to its source LIBERO HDF5 demo
+2. reads the BDDL `obj_of_interest`
+3. restores the saved MuJoCo state at every timestep
+4. finds the nearest future timestep whose state has an object of interest
+   grasped, counting the current timestep
+5. re-renders the RGB observations with that object highlighted
+
+The output dataset is still a normal LeRobot dataset, so the existing training
+pipeline reads it the same way as any other LIBERO dataset.
+
+Example:
+
+```bash
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+  examples/libero/convert_libero_data_to_lerobot.py \
+  --data_dir data/libero/raw \
+  --repo_name local/libero_spatial_next_object \
+  --suite_names libero_spatial \
+  --next-object-highlighting \
+  --highlight-rgb 255,105,180 \
+  --demo-search-roots third_party/libero/libero/datasets
+```
+
+Notes:
+
+- the default highlight color is pink: `255,105,180`
+- `--highlight-alpha` controls blending strength
+- this transform requires the original LIBERO source HDF5 demos, not just the
+  RLDS shards, because the replay uses saved MuJoCo `states`
+- the converter records the transform settings in `meta/libero_subset.json`
+
 ## Predicate Work
 
 If you are experimenting with new LIBERO BDDL predicates, the main code path is:

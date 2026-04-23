@@ -264,6 +264,8 @@ sbatch \
 
 `dj-med` currently reports a 12-hour walltime cap, so treat `12:00:00` as the safe default for that QoS unless the cluster policy changes.
 
+Note that you really need to add requeue functionality!! Most jobs take longer than this.
+
 ### Queue inspection
 
 ```bash
