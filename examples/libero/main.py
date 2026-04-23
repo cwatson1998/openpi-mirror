@@ -20,6 +20,8 @@ import tqdm
 import tyro
 import wandb
 
+from annotation import OnlineNextObjectHighlightTracker
+from annotation import build_grasp_order_from_source_demo
 from openpi.training import libero as libero_utils
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
@@ -53,6 +55,10 @@ class Args:
     mask_rgb_csv: str = "0,0,0"  # RGB color used for masked pixels.
     mask_alpha: float = 1.0  # Alpha used to blend masked pixels with mask_rgb_csv.
     mask_cameras_csv: str = ""  # Optional comma-separated cameras to mask, e.g. agentview,robot0_eye_in_hand.
+    next_object_highlighting: bool = False  # Enable demo-derived online highlighting during eval.
+    next_object_highlight_rgb_csv: str = "255,105,180"  # RGB color used for next-object highlighting.
+    next_object_highlight_alpha: float = 1.0  # Alpha used to blend highlighted pixels.
+    next_object_highlight_release_steps: int = 4  # Consecutive non-grasped steps required before advancing.
 
     #################################################################################################################
     # Utils
@@ -132,6 +138,10 @@ def _init_wandb(args: Args) -> None:
             "mask_rgb_csv": args.mask_rgb_csv,
             "mask_alpha": args.mask_alpha,
             "mask_cameras_csv": args.mask_cameras_csv,
+            "next_object_highlighting": args.next_object_highlighting,
+            "next_object_highlight_rgb_csv": args.next_object_highlight_rgb_csv,
+            "next_object_highlight_alpha": args.next_object_highlight_alpha,
+            "next_object_highlight_release_steps": args.next_object_highlight_release_steps,
             "replan_steps": args.replan_steps,
             "resize_size": args.resize_size,
             "seed": args.seed,
@@ -288,6 +298,7 @@ def _build_task_result(
     task_episodes: int,
     task_successes: int,
     episode_results: list[dict],
+    next_object_grasp_order: tuple[str, ...] = (),
 ) -> dict:
     return {
         "task_id": task_id,
@@ -295,6 +306,7 @@ def _build_task_result(
         "episodes": task_episodes,
         "successes": task_successes,
         "success_rate": float(task_successes) / float(task_episodes) if task_episodes else 0.0,
+        "next_object_grasp_order": list(next_object_grasp_order),
         "episode_results": episode_results,
     }
 
@@ -329,6 +341,10 @@ def _build_results_payload(
         "replan_steps": args.replan_steps,
         "resize_size": args.resize_size,
         "seed": args.seed,
+        "next_object_highlighting": args.next_object_highlighting,
+        "next_object_highlight_rgb_csv": args.next_object_highlight_rgb_csv,
+        "next_object_highlight_alpha": args.next_object_highlight_alpha,
+        "next_object_highlight_release_steps": args.next_object_highlight_release_steps,
         "host": args.host,
         "port": args.port,
         "video_out_path": str(video_out_path),
@@ -406,6 +422,64 @@ def _maybe_log_wandb_episode_video(
     )
 
 
+def _highlight_camera_names(args: Args) -> list[str]:
+    camera_names = _parse_csv_list(args.mask_cameras_csv)
+    return camera_names or ["agentview", "robot0_eye_in_hand"]
+
+
+def _resolve_online_grasp_order(task_suite, task_id: int) -> tuple[str, ...]:
+    datasets_root = pathlib.Path(get_libero_path("datasets"))
+    source_demo_path = datasets_root / task_suite.get_task_demonstration(task_id)
+    grasp_order = build_grasp_order_from_source_demo(source_demo_path)
+    logging.info("Resolved online next-object grasp order from %s: %s", source_demo_path, list(grasp_order))
+    return grasp_order
+
+
+def _apply_online_highlight_mask(
+    env: MaskedSegmentationRenderEnv,
+    tracker: OnlineNextObjectHighlightTracker | None,
+    args: Args,
+) -> None:
+    if tracker is None or tracker.current_object is None:
+        env.clear_instance_mask()
+        return
+
+    # Keep the eval-time observation transform aligned with the highlighted
+    # training datasets: we overwrite the RGB observations returned by the env
+    # wrapper rather than doing any external image postprocessing.
+    env.set_instance_mask(
+        tracker.current_object,
+        mask_rgb=_parse_rgb_csv(args.next_object_highlight_rgb_csv),
+        mask_alpha=float(args.next_object_highlight_alpha),
+        camera_names=_highlight_camera_names(args),
+    )
+
+
+def _update_online_highlight_tracker(
+    env: MaskedSegmentationRenderEnv,
+    obs: dict,
+    tracker: OnlineNextObjectHighlightTracker | None,
+    args: Args,
+) -> dict:
+    if tracker is None or tracker.current_object is None:
+        return obs
+
+    current_object = tracker.current_object
+    if current_object not in env.env.object_states_dict:
+        raise KeyError(f"Current highlighted object `{current_object}` is missing from the live environment.")
+
+    advanced = tracker.observe(
+        is_current_object_grasped=bool(env.env.object_states_dict[current_object].is_grasped())
+    )
+    if not advanced:
+        return obs
+
+    _apply_online_highlight_mask(env, tracker, args)
+    # The mask target changed for the current simulator state, so re-render the
+    # current observations before they are passed to the policy on the next loop.
+    return env.regenerate_obs_from_state(env.get_sim_state())
+
+
 def eval_libero(args: Args) -> None:
     # Set random seed
     np.random.seed(args.seed)
@@ -451,6 +525,8 @@ def eval_libero(args: Args) -> None:
         run_tag = args.task_suite_name
         if args.prompt_override_file:
             run_tag += "_logic"
+        if args.next_object_highlighting:
+            run_tag += "_next_object"
         video_out_path = pathlib.Path("data/libero/runs") / f"{timestamp}_{run_tag}"
     video_out_path.mkdir(parents=True, exist_ok=True)
     logging.info(f"Run output directory: {video_out_path}")
@@ -502,6 +578,9 @@ def eval_libero(args: Args) -> None:
         # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed, args)
         task_description = prompt_overrides.get(task_description, task_description)
+        next_object_grasp_order = ()
+        if args.next_object_highlighting:
+            next_object_grasp_order = _resolve_online_grasp_order(task_suite, task_id)
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -513,6 +592,14 @@ def eval_libero(args: Args) -> None:
             # Reset environment
             env.reset()
             action_plan = collections.deque()
+            highlight_tracker = None
+            if args.next_object_highlighting:
+                highlight_tracker = OnlineNextObjectHighlightTracker(
+                    grasp_order=tuple(next_object_grasp_order),
+                    min_grasp_steps=1,
+                    release_steps=args.next_object_highlight_release_steps,
+                )
+                _apply_online_highlight_mask(env, highlight_tracker, args)
 
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
@@ -537,6 +624,8 @@ def eval_libero(args: Args) -> None:
                     if t < args.num_steps_wait:
                         episode_phase = "wait"
                         obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
+                        if args.next_object_highlighting:
+                            obs = _update_online_highlight_tracker(env, obs, highlight_tracker, args)
                         t += 1
                         wait_steps_taken += 1
                         continue
@@ -585,6 +674,8 @@ def eval_libero(args: Args) -> None:
                     # Execute action in environment
                     episode_phase = "policy_action"
                     obs, reward, done, info = env.step(action.tolist())
+                    if args.next_object_highlighting:
+                        obs = _update_online_highlight_tracker(env, obs, highlight_tracker, args)
                     t += 1
                     policy_steps_taken += 1
                     if done:
@@ -669,6 +760,7 @@ def eval_libero(args: Args) -> None:
                         task_description=task_description,
                         task_episodes=task_episodes,
                         task_successes=task_successes,
+                        next_object_grasp_order=tuple(next_object_grasp_order),
                         episode_results=episode_results,
                     ),
                 ],
@@ -716,6 +808,7 @@ def eval_libero(args: Args) -> None:
                 task_description=task_description,
                 task_episodes=task_episodes,
                 task_successes=task_successes,
+                next_object_grasp_order=tuple(next_object_grasp_order),
                 episode_results=episode_results,
             )
         )
@@ -775,6 +868,8 @@ def _get_libero_env(task, resolution, seed, args: Args):
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
     masked_instances = _parse_csv_list(args.mask_instances_csv)
+    if masked_instances and args.next_object_highlighting:
+        raise ValueError("Use either static RGB masking or next-object highlighting, not both at once.")
     if masked_instances:
         env_args["masked_instance_names"] = masked_instances
         env_args["mask_rgb"] = _parse_rgb_csv(args.mask_rgb_csv)
@@ -782,6 +877,8 @@ def _get_libero_env(task, resolution, seed, args: Args):
         mask_cameras = _parse_csv_list(args.mask_cameras_csv)
         if mask_cameras:
             env_args["mask_camera_names"] = mask_cameras
+        env = MaskedSegmentationRenderEnv(**env_args)
+    elif args.next_object_highlighting:
         env = MaskedSegmentationRenderEnv(**env_args)
     else:
         env = OffScreenRenderEnv(**env_args)

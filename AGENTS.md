@@ -114,6 +114,13 @@ For simulator-backed dataset generation:
 - that path depends on `src/annotation/libero_demo_replay.py` to resolve RLDS episodes back to source HDF5 demos and restore saved MuJoCo `states`
 - it requires the original LIBERO source HDF5 demos under `third_party/libero/libero/datasets` or another explicit `--demo-search-roots` path; raw RLDS shards alone are not enough
 
+For online next-object highlighting during LIBERO eval:
+
+- `examples/libero/main.py` now supports `--next-object-highlighting`
+- the live grasp-order discovery comes from `annotation.build_grasp_order_from_source_demo(...)`, using one source HDF5 demo per benchmark task
+- the online rollout state machine is `annotation.OnlineNextObjectHighlightTracker`
+- this path requires `MaskedSegmentationRenderEnv`, because the live policy observations themselves must be re-rendered with the active highlight
+
 For BDDL predicate / spatial-relation work:
 
 - runtime predicate implementations live in `third_party/libero/libero/libero/envs/predicates/base_predicates.py`

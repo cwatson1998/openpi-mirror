@@ -125,6 +125,26 @@ observations as well as human-visible replay videos. The eval entrypoint
 For the full masking workflow, including replay examples, see
 [`MASKING_README.md`](../../MASKING_README.md).
 
+This eval entrypoint now also supports online next-object highlighting:
+
+- `--next-object-highlighting`
+- `--next-object-highlight-rgb-csv`
+- `--next-object-highlight-alpha`
+- `--next-object-highlight-release-steps`
+
+That mode:
+
+- derives a single grasp order from one source demo for each benchmark task
+- starts by highlighting the first grasp target online during rollout
+- advances to the next target only after the current highlighted object has been
+  grasped and then released for the configured number of consecutive timesteps
+- keeps the last grasp target highlighted until the episode ends
+
+This is meant to match the highlighted-dataset training setup as closely as
+possible, but note the caveat from the annotation docs: the training dataset
+uses an offline future-grasp oracle, while live eval must rely on this simpler
+state-machine approximation.
+
 ## Dataset Conversion
 
 The training pipeline consumes LeRobot datasets, not raw RLDS directly. The
