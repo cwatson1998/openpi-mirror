@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from annotation.libero_predicate_change_visualization import _maybe_rotate_image_180
 from annotation.libero_predicate_change_visualization import make_predicate_change_visualization_pages
 
 
@@ -71,3 +72,28 @@ def test_make_predicate_change_visualization_pages_supports_empty_change_list() 
     assert pages.shape[0] == 1
     assert pages.shape[-1] == 3
     assert np.any(pages[0] != 248)
+
+
+def test_maybe_rotate_image_180_rotates_only_when_requested() -> None:
+    image = np.array(
+        [
+            [[1, 0, 0], [2, 0, 0]],
+            [[3, 0, 0], [4, 0, 0]],
+        ],
+        dtype=np.uint8,
+    )
+
+    unrotated = _maybe_rotate_image_180(image, rotate_images_180=False)
+    rotated = _maybe_rotate_image_180(image, rotate_images_180=True)
+
+    np.testing.assert_array_equal(unrotated, image)
+    np.testing.assert_array_equal(
+        rotated,
+        np.array(
+            [
+                [[4, 0, 0], [3, 0, 0]],
+                [[2, 0, 0], [1, 0, 0]],
+            ],
+            dtype=np.uint8,
+        ),
+    )

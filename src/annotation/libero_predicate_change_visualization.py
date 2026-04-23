@@ -13,6 +13,9 @@ repeating the same frame comparison header on each page.
 
 Example usage:
     PYTHONPATH=src:third_party/libero $HOME/miniconda3/envs/instructvla_libero/bin/python -m annotation.libero_predicate_change_visualization --dataset-name libero_spatial_no_noops --data-dir data/libero/raw --episode-index 0 --output-dir outputs/libero_predicate_change_visualization/ep0
+    Add --only-consider-obj-of-interest to restrict predicate sweeps to the
+    BDDL file's obj_of_interest set.
+    Add --rotate-images-180 to rotate the rendered images in the output PNGs.
 
 Note: use the conda env ($HOME/miniconda3/envs/instructvla_libero/bin/python) rather than
 examples/libero/.venv/bin/python when loading RLDS/TFDS datasets, because the latter does
@@ -35,6 +38,7 @@ from annotation.libero_demo_replay import render_demo_timestep_indices
 from annotation.libero_demo_replay import resolve_demo_replay_spec
 from annotation.libero_demo_replay import write_frame_sequence
 from annotation.libero_predicate_annotation import LiberoPredicateEvaluator
+from annotation.libero_predicate_annotation import add_predicate_sweep_arguments
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -80,6 +84,12 @@ def _transition_color(transition: str) -> tuple[int, int, int]:
 
 def _truth_cell_color(*, is_true: bool) -> tuple[int, int, int]:
     return (214, 246, 214) if is_true else (236, 236, 236)
+
+
+def _maybe_rotate_image_180(image: np.ndarray, *, rotate_images_180: bool) -> np.ndarray:
+    if not rotate_images_180:
+        return image
+    return np.ascontiguousarray(np.rot90(image, 2))
 
 
 def make_predicate_change_visualization_pages(
@@ -381,8 +391,12 @@ def main() -> None:
     parser.add_argument("--camera-name", default="agentview")
     parser.add_argument("--camera-height", type=int, default=256)
     parser.add_argument("--camera-width", type=int, default=256)
-    parser.add_argument("--predicate", action="append", default=[])
-    parser.add_argument("--include-self-relations", action="store_true")
+    add_predicate_sweep_arguments(parser)
+    parser.add_argument(
+        "--rotate-images-180",
+        action="store_true",
+        help="Rotate the rendered first/last images by 180 degrees in the output PNGs only.",
+    )
     parser.add_argument("--rows-per-page", type=int, default=16)
     parser.add_argument("--output-dir", default="outputs/libero_predicate_change_visualization")
     args = parser.parse_args()
@@ -405,6 +419,7 @@ def main() -> None:
             last_timestep_index=-1,
             include_self_relations=args.include_self_relations,
             predicate_names=args.predicate or None,
+            only_consider_obj_of_interest=args.only_consider_obj_of_interest,
         )
 
     first_render = render_demo(
@@ -423,8 +438,14 @@ def main() -> None:
         camera_width=args.camera_width,
     )
     pages = make_predicate_change_visualization_pages(
-        first_frame=first_render.frames[0],
-        last_frame=last_render.frames[0],
+        first_frame=_maybe_rotate_image_180(
+            first_render.frames[0],
+            rotate_images_180=args.rotate_images_180,
+        ),
+        last_frame=_maybe_rotate_image_180(
+            last_render.frames[0],
+            rotate_images_180=args.rotate_images_180,
+        ),
         comparison_report=comparison_report,
         dataset_name=args.dataset_name if args.source_demo_file is None else None,
         episode_index=args.episode_index,
@@ -447,6 +468,7 @@ def main() -> None:
         "num_pages": int(pages.shape[0]),
         "page_shape": list(pages.shape[1:]),
         "rows_per_page": int(args.rows_per_page),
+        "rotate_images_180": bool(args.rotate_images_180),
         "truth_value_change_summary": comparison_report["truth_value_changes"]["summary"],
         "comparison_report": comparison_report,
         "first_frame_render": render_manifest,

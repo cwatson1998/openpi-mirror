@@ -22,6 +22,7 @@ Typical usage:
       --dataset-name libero_spatial_no_noops \
       --data-dir data/libero/raw \
       --episode-index 0 \
+      --only-consider-obj-of-interest \
       --output-json outputs/libero_predicate_annotations/ep0.json
 """
 
@@ -101,16 +102,96 @@ class PredicateTruthValueChange:
         }
 
 
-def extract_goal_argument_names(goal_state: Sequence[Sequence[str]]) -> tuple[str, ...]:
+@dataclasses.dataclass(frozen=True)
+class PredicateSweepConfig:
+    unary_predicates: tuple[str, ...]
+    binary_predicates: tuple[str, ...]
+    focus_object_names: tuple[str, ...]
+    candidate_argument_names: tuple[str, ...]
+    scene_instance_names: tuple[str, ...]
+    goal_argument_names: tuple[str, ...]
+    obj_of_interest_names: tuple[str, ...]
+    missing_goal_argument_names: tuple[str, ...]
+    missing_obj_of_interest_names: tuple[str, ...]
+    only_consider_obj_of_interest: bool
+
+
+def extract_ordered_unique_names(names: Iterable[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     ordered_names: list[str] = []
-    for state in goal_state:
-        for argument_name in state[1:]:
-            if argument_name in seen:
-                continue
-            seen.add(argument_name)
-            ordered_names.append(argument_name)
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered_names.append(name)
     return tuple(ordered_names)
+
+
+def extract_goal_argument_names(goal_state: Sequence[Sequence[str]]) -> tuple[str, ...]:
+    return extract_ordered_unique_names(
+        argument_name
+        for state in goal_state
+        for argument_name in state[1:]
+    )
+
+
+def partition_known_instance_names(
+    requested_names: Sequence[str],
+    available_instance_names: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    available_name_set = set(available_instance_names)
+    present_names: list[str] = []
+    missing_names: list[str] = []
+    for name in extract_ordered_unique_names(requested_names):
+        if name in available_name_set:
+            present_names.append(name)
+        else:
+            missing_names.append(name)
+    return tuple(present_names), tuple(missing_names)
+
+
+def build_related_instance_names_by_name(
+    region_target_names: dict[str, str],
+) -> dict[str, tuple[str, ...]]:
+    related_names: dict[str, list[str]] = {}
+    for region_name, target_name in region_target_names.items():
+        related_names.setdefault(target_name, []).append(region_name)
+        related_names.setdefault(region_name, []).append(target_name)
+    return {
+        name: extract_ordered_unique_names(neighbors)
+        for name, neighbors in related_names.items()
+    }
+
+
+def expand_related_instance_names(
+    requested_names: Sequence[str],
+    available_instance_names: Sequence[str],
+    related_instance_names_by_name: dict[str, tuple[str, ...]],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    available_name_set = set(available_instance_names)
+    expanded_names: list[str] = []
+    missing_names: list[str] = []
+
+    for requested_name in extract_ordered_unique_names(requested_names):
+        if requested_name not in available_name_set:
+            missing_names.append(requested_name)
+            continue
+
+        pending_names = [requested_name]
+        local_seen: set[str] = set()
+        while pending_names:
+            current_name = pending_names.pop(0)
+            if current_name in local_seen:
+                continue
+            local_seen.add(current_name)
+            expanded_names.append(current_name)
+            pending_names.extend(
+                related_name
+                for related_name in related_instance_names_by_name.get(current_name, ())
+                if related_name in available_name_set and related_name not in local_seen
+            )
+
+    return extract_ordered_unique_names(expanded_names), tuple(missing_names)
 
 
 def predicate_callable_arity(predicate_fn: Any) -> int | None:
@@ -363,6 +444,25 @@ class LiberoPredicateEvaluator:
     def goal_argument_names(self) -> tuple[str, ...]:
         return extract_goal_argument_names(self.parsed_problem["goal_state"])
 
+    @property
+    def obj_of_interest_names(self) -> tuple[str, ...]:
+        return extract_ordered_unique_names(self.parsed_problem.get("obj_of_interest", ()))
+
+    @property
+    def region_target_names(self) -> dict[str, str]:
+        available_name_set = set(self.scene_instance_names)
+        region_target_names: dict[str, str] = {}
+        for region_name, region_spec in self.parsed_problem.get("regions", {}).items():
+            target_name = str(region_spec.get("target") or "")
+            if region_name not in available_name_set or target_name not in available_name_set:
+                continue
+            region_target_names[region_name] = target_name
+        return region_target_names
+
+    @property
+    def related_instance_names_by_name(self) -> dict[str, tuple[str, ...]]:
+        return build_related_instance_names_by_name(self.region_target_names)
+
     def close(self) -> None:
         self.env.close()
 
@@ -459,14 +559,48 @@ class LiberoPredicateEvaluator:
             predicate_names_by_arity.get(2, ()),
         )
 
+    def _build_sweep_config(
+        self,
+        *,
+        predicate_names: Sequence[str] | None,
+        only_consider_obj_of_interest: bool,
+    ) -> PredicateSweepConfig:
+        unary_predicates, binary_predicates = self._resolve_selected_predicates(predicate_names)
+        scene_instance_names = self.scene_instance_names
+        goal_argument_names = self.goal_argument_names
+        obj_of_interest_names = self.obj_of_interest_names
+        related_instance_names_by_name = self.related_instance_names_by_name
+        focus_object_names, missing_goal_argument_names = expand_related_instance_names(
+            goal_argument_names,
+            scene_instance_names,
+            related_instance_names_by_name,
+        )
+        available_obj_of_interest_names, missing_obj_of_interest_names = expand_related_instance_names(
+            obj_of_interest_names,
+            scene_instance_names,
+            related_instance_names_by_name,
+        )
+        candidate_argument_names = (
+            available_obj_of_interest_names if only_consider_obj_of_interest else scene_instance_names
+        )
+        return PredicateSweepConfig(
+            unary_predicates=unary_predicates,
+            binary_predicates=binary_predicates,
+            focus_object_names=focus_object_names,
+            candidate_argument_names=candidate_argument_names,
+            scene_instance_names=scene_instance_names,
+            goal_argument_names=goal_argument_names,
+            obj_of_interest_names=obj_of_interest_names,
+            missing_goal_argument_names=missing_goal_argument_names,
+            missing_obj_of_interest_names=missing_obj_of_interest_names,
+            only_consider_obj_of_interest=only_consider_obj_of_interest,
+        )
+
     def _annotation_context(
         self,
         *,
-        unary_predicates: Sequence[str],
-        binary_predicates: Sequence[str],
+        sweep_config: PredicateSweepConfig,
     ) -> dict[str, Any]:
-        scene_instance_names = self.scene_instance_names
-        goal_argument_names = self.goal_argument_names
         return {
             "demo": {
                 "demo_hdf5_path": str(self.spec.demo_hdf5_path),
@@ -478,20 +612,23 @@ class LiberoPredicateEvaluator:
                 "num_saved_states": int(self.spec.states.shape[0]),
             },
             "goal_state": [list(state) for state in self.parsed_problem["goal_state"]],
-            "goal_argument_names": list(goal_argument_names),
-            "missing_goal_arguments": [
-                name for name in goal_argument_names if name not in self.env.env.object_states_dict
-            ],
+            "goal_argument_names": list(sweep_config.goal_argument_names),
+            "obj_of_interest_names": list(sweep_config.obj_of_interest_names),
+            "focus_object_names": list(sweep_config.focus_object_names),
+            "candidate_argument_names": list(sweep_config.candidate_argument_names),
+            "only_consider_obj_of_interest": sweep_config.only_consider_obj_of_interest,
+            "missing_goal_arguments": list(sweep_config.missing_goal_argument_names),
+            "missing_obj_of_interest_names": list(sweep_config.missing_obj_of_interest_names),
             "scene_instances": [
                 {
                     "name": name,
                     "kind": self.describe_instance_kind(name),
                 }
-                for name in scene_instance_names
+                for name in sweep_config.scene_instance_names
             ],
             "predicate_inventory": {
-                "unary": list(unary_predicates),
-                "binary": list(binary_predicates),
+                "unary": list(sweep_config.unary_predicates),
+                "binary": list(sweep_config.binary_predicates),
             },
         }
 
@@ -499,15 +636,11 @@ class LiberoPredicateEvaluator:
         self,
         *,
         timestep_index: int = -1,
-        unary_predicates: Sequence[str],
-        binary_predicates: Sequence[str],
+        sweep_config: PredicateSweepConfig,
         include_self_relations: bool = False,
         max_skip_examples: int = 20,
     ) -> dict[str, Any]:
         normalized_index = self.restore_timestep(timestep_index)
-
-        scene_instance_names = self.scene_instance_names
-        goal_argument_names = self.goal_argument_names
 
         goal_state_evaluations = [
             self.evaluate(state[0], state[1:], timestep_index=normalized_index).to_dict()
@@ -520,10 +653,7 @@ class LiberoPredicateEvaluator:
         total_skipped = 0
         skipped_examples: list[dict[str, Any]] = []
 
-        for focus_object_name in goal_argument_names:
-            if focus_object_name not in self.env.env.object_states_dict:
-                continue
-
+        for focus_object_name in sweep_config.focus_object_names:
             predicate_evaluations: list[dict[str, Any]] = []
             true_ground_predicates: list[dict[str, Any]] = []
             object_checks = 0
@@ -531,9 +661,9 @@ class LiberoPredicateEvaluator:
 
             for _, predicate_name, arguments in iter_focus_object_predicate_calls(
                 [focus_object_name],
-                scene_instance_names,
-                unary_predicates=unary_predicates,
-                binary_predicates=binary_predicates,
+                sweep_config.candidate_argument_names,
+                unary_predicates=sweep_config.unary_predicates,
+                binary_predicates=sweep_config.binary_predicates,
                 include_self_relations=include_self_relations,
             ):
                 object_checks += 1
@@ -591,7 +721,8 @@ class LiberoPredicateEvaluator:
             "annotations": annotations,
             "summary": {
                 "num_focus_objects": len(annotations),
-                "num_scene_instances": len(scene_instance_names),
+                "num_scene_instances": len(sweep_config.scene_instance_names),
+                "num_candidate_argument_instances": len(sweep_config.candidate_argument_names),
                 "num_candidate_checks": total_checks,
                 "num_true_ground_predicates": total_true,
                 "num_skipped_checks": total_skipped,
@@ -605,18 +736,20 @@ class LiberoPredicateEvaluator:
         timestep_index: int = -1,
         include_self_relations: bool = False,
         predicate_names: Sequence[str] | None = None,
+        only_consider_obj_of_interest: bool = False,
         max_skip_examples: int = 20,
     ) -> dict[str, Any]:
-        unary_predicates, binary_predicates = self._resolve_selected_predicates(predicate_names)
+        sweep_config = self._build_sweep_config(
+            predicate_names=predicate_names,
+            only_consider_obj_of_interest=only_consider_obj_of_interest,
+        )
         report = self._annotation_context(
-            unary_predicates=unary_predicates,
-            binary_predicates=binary_predicates,
+            sweep_config=sweep_config,
         )
         report.update(
             self._build_goal_annotation_snapshot(
                 timestep_index=timestep_index,
-                unary_predicates=unary_predicates,
-                binary_predicates=binary_predicates,
+                sweep_config=sweep_config,
                 include_self_relations=include_self_relations,
                 max_skip_examples=max_skip_examples,
             )
@@ -630,24 +763,25 @@ class LiberoPredicateEvaluator:
         last_timestep_index: int = -1,
         include_self_relations: bool = False,
         predicate_names: Sequence[str] | None = None,
+        only_consider_obj_of_interest: bool = False,
         max_skip_examples: int = 20,
     ) -> dict[str, Any]:
-        unary_predicates, binary_predicates = self._resolve_selected_predicates(predicate_names)
+        sweep_config = self._build_sweep_config(
+            predicate_names=predicate_names,
+            only_consider_obj_of_interest=only_consider_obj_of_interest,
+        )
         report = self._annotation_context(
-            unary_predicates=unary_predicates,
-            binary_predicates=binary_predicates,
+            sweep_config=sweep_config,
         )
         first_snapshot = self._build_goal_annotation_snapshot(
             timestep_index=first_timestep_index,
-            unary_predicates=unary_predicates,
-            binary_predicates=binary_predicates,
+            sweep_config=sweep_config,
             include_self_relations=include_self_relations,
             max_skip_examples=max_skip_examples,
         )
         last_snapshot = self._build_goal_annotation_snapshot(
             timestep_index=last_timestep_index,
-            unary_predicates=unary_predicates,
-            binary_predicates=binary_predicates,
+            sweep_config=sweep_config,
             include_self_relations=include_self_relations,
             max_skip_examples=max_skip_examples,
         )
@@ -677,6 +811,19 @@ def _write_json_if_requested(report: dict[str, Any], output_json: str | None) ->
     output_path = Path(output_json).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, indent=2) + "\n")
+
+
+def add_predicate_sweep_arguments(command_parser: argparse.ArgumentParser) -> None:
+    command_parser.add_argument("--predicate", action="append", default=[])
+    command_parser.add_argument("--include-self-relations", action="store_true")
+    command_parser.add_argument(
+        "--only-consider-obj-of-interest",
+        action="store_true",
+        help=(
+            "Restrict the candidate argument pool for predicate sweeps to the BDDL "
+            "`obj_of_interest` set instead of all scene instances."
+        ),
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -709,8 +856,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_demo_selector_arguments(annotate_parser)
     annotate_parser.add_argument("--timestep-index", type=int, default=-1)
-    annotate_parser.add_argument("--predicate", action="append", default=[])
-    annotate_parser.add_argument("--include-self-relations", action="store_true")
+    add_predicate_sweep_arguments(annotate_parser)
 
     compare_parser = subparsers.add_parser(
         "compare-goal-first-last-state",
@@ -719,8 +865,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_demo_selector_arguments(compare_parser)
     compare_parser.add_argument("--first-timestep-index", type=int, default=0)
     compare_parser.add_argument("--last-timestep-index", type=int, default=-1)
-    compare_parser.add_argument("--predicate", action="append", default=[])
-    compare_parser.add_argument("--include-self-relations", action="store_true")
+    add_predicate_sweep_arguments(compare_parser)
 
     return parser
 
@@ -751,6 +896,7 @@ def main() -> None:
                 timestep_index=args.timestep_index,
                 include_self_relations=args.include_self_relations,
                 predicate_names=args.predicate or None,
+                only_consider_obj_of_interest=args.only_consider_obj_of_interest,
             )
         elif args.command == "compare-goal-first-last-state":
             report = evaluator.compare_goal_object_predicates_between_timesteps(
@@ -758,6 +904,7 @@ def main() -> None:
                 last_timestep_index=args.last_timestep_index,
                 include_self_relations=args.include_self_relations,
                 predicate_names=args.predicate or None,
+                only_consider_obj_of_interest=args.only_consider_obj_of_interest,
             )
         else:
             raise ValueError(f"Unsupported command `{args.command}`.")

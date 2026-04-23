@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from annotation.libero_predicate_annotation import build_related_instance_names_by_name
 from annotation.libero_predicate_annotation import build_truth_value_change_report
+from annotation.libero_predicate_annotation import expand_related_instance_names
 from annotation.libero_predicate_annotation import extract_goal_argument_names
+from annotation.libero_predicate_annotation import extract_ordered_unique_names
 from annotation.libero_predicate_annotation import group_predicates_by_arity
 from annotation.libero_predicate_annotation import iter_focus_object_predicate_calls
 from annotation.libero_predicate_annotation import normalize_timestep_index
+from annotation.libero_predicate_annotation import partition_known_instance_names
 from annotation.libero_predicate_annotation import predicate_callable_arity
 from annotation.libero_predicate_annotation import predicate_evaluation_key
 
@@ -37,6 +41,74 @@ def test_extract_goal_argument_names_preserves_first_appearance_order() -> None:
         "chocolate_pudding_1",
         "microwave_1",
     )
+
+
+def test_extract_ordered_unique_names_preserves_order() -> None:
+    assert extract_ordered_unique_names(["b", "a", "b", "c", "a"]) == ("b", "a", "c")
+
+
+def test_partition_known_instance_names_splits_present_and_missing() -> None:
+    present, missing = partition_known_instance_names(
+        ["plate_1", "ghost", "plate_1", "mug_1"],
+        ["mug_1", "plate_1", "table_region"],
+    )
+
+    assert present == ("plate_1", "mug_1")
+    assert missing == ("ghost",)
+
+
+def test_build_related_instance_names_by_name_links_objects_and_regions() -> None:
+    related = build_related_instance_names_by_name(
+        {
+            "desk_caddy_1_right_contain_region": "desk_caddy_1",
+            "desk_caddy_1_left_contain_region": "desk_caddy_1",
+            "study_table_book_init_region": "study_table",
+        }
+    )
+
+    assert related == {
+        "desk_caddy_1": (
+            "desk_caddy_1_right_contain_region",
+            "desk_caddy_1_left_contain_region",
+        ),
+        "desk_caddy_1_right_contain_region": ("desk_caddy_1",),
+        "desk_caddy_1_left_contain_region": ("desk_caddy_1",),
+        "study_table": ("study_table_book_init_region",),
+        "study_table_book_init_region": ("study_table",),
+    }
+
+
+def test_expand_related_instance_names_closes_over_object_region_relationships() -> None:
+    available_instance_names = [
+        "black_book_1",
+        "desk_caddy_1",
+        "desk_caddy_1_right_contain_region",
+        "desk_caddy_1_left_contain_region",
+        "study_table",
+        "study_table_book_init_region",
+    ]
+    related = build_related_instance_names_by_name(
+        {
+            "desk_caddy_1_right_contain_region": "desk_caddy_1",
+            "desk_caddy_1_left_contain_region": "desk_caddy_1",
+            "study_table_book_init_region": "study_table",
+        }
+    )
+
+    expanded, missing = expand_related_instance_names(
+        ["desk_caddy_1_right_contain_region", "study_table", "ghost"],
+        available_instance_names,
+        related,
+    )
+
+    assert expanded == (
+        "desk_caddy_1_right_contain_region",
+        "desk_caddy_1",
+        "desk_caddy_1_left_contain_region",
+        "study_table",
+        "study_table_book_init_region",
+    )
+    assert missing == ("ghost",)
 
 
 def test_predicate_callable_arity_detects_fixed_and_variadic_callables() -> None:
@@ -82,6 +154,24 @@ def test_iter_focus_object_predicate_calls_enumerates_both_binary_argument_order
         ("plate_1", "right-of", ("mug_1", "plate_1")),
         ("plate_1", "right-of", ("plate_1", "table_region")),
         ("plate_1", "right-of", ("table_region", "plate_1")),
+    ]
+
+
+def test_iter_focus_object_predicate_calls_supports_restricted_candidate_pool() -> None:
+    calls = list(
+        iter_focus_object_predicate_calls(
+            ["plate_1"],
+            ["mug_1"],
+            unary_predicates=["close"],
+            binary_predicates=["on"],
+            include_self_relations=False,
+        )
+    )
+
+    assert calls == [
+        ("plate_1", "close", ("plate_1",)),
+        ("plate_1", "on", ("plate_1", "mug_1")),
+        ("plate_1", "on", ("mug_1", "plate_1")),
     ]
 
 
