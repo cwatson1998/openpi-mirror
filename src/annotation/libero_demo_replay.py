@@ -100,6 +100,69 @@ class NextObjectHighlightRenderResult:
     highlight_plan: NextObjectHighlightPlan
 
 
+@dataclasses.dataclass
+class OnlineNextObjectHighlightTracker:
+    """Tracks which object should be highlighted during a live rollout.
+
+    The tracker starts by highlighting the first object in the offline grasp
+    order. It advances only after the current highlighted object has been
+    grasped for at least `min_grasp_steps` consecutive timesteps and then
+    released for at least `release_steps` consecutive timesteps. The last object
+    is sticky and remains highlighted until the episode ends.
+    """
+
+    grasp_order: tuple[str, ...]
+    min_grasp_steps: int = 1
+    release_steps: int = 4
+    current_index: int = 0
+    _grasped_streak: int = 0
+    _released_streak: int = 0
+
+    def __post_init__(self) -> None:
+        if self.min_grasp_steps <= 0:
+            raise ValueError("min_grasp_steps must be positive.")
+        if self.release_steps <= 0:
+            raise ValueError("release_steps must be positive.")
+        if self.grasp_order and not 0 <= self.current_index < len(self.grasp_order):
+            raise ValueError("current_index is out of range for the provided grasp order.")
+        if not self.grasp_order:
+            self.current_index = 0
+
+    @property
+    def current_object(self) -> str | None:
+        if not self.grasp_order:
+            return None
+        return self.grasp_order[self.current_index]
+
+    @property
+    def is_on_last_object(self) -> bool:
+        return bool(self.grasp_order) and self.current_index == len(self.grasp_order) - 1
+
+    def observe(self, *, is_current_object_grasped: bool) -> bool:
+        """Update the tracker with one timestep and return whether it advanced."""
+
+        if not self.grasp_order or self.is_on_last_object:
+            return False
+
+        if is_current_object_grasped:
+            self._grasped_streak += 1
+            self._released_streak = 0
+            return False
+
+        if self._grasped_streak < self.min_grasp_steps:
+            self._released_streak = 0
+            return False
+
+        self._released_streak += 1
+        if self._released_streak < self.release_steps:
+            return False
+
+        self.current_index += 1
+        self._grasped_streak = 0
+        self._released_streak = 0
+        return True
+
+
 def _numeric_demo_sort_key(name: str) -> tuple[str, int]:
     prefix, _, suffix = name.partition("_")
     if prefix == "demo" and suffix.isdigit():
@@ -110,9 +173,25 @@ def _numeric_demo_sort_key(name: str) -> tuple[str, int]:
 def _max_abs_diff(left: np.ndarray | None, right: np.ndarray | None) -> float:
     if left is None or right is None:
         return float("inf")
-    if left.shape != right.shape:
+    if left.shape == right.shape:
+        return float(np.max(np.abs(left.astype(np.float64) - right.astype(np.float64))))
+
+    # RLDS "no noops" exports can differ from the source HDF5 by a small number
+    # of timesteps. Preserve the mismatch signal via `length_delta`, but still
+    # compare the overlapping prefix so nearby candidates remain distinguishable.
+    if left.ndim != right.ndim or left.shape[1:] != right.shape[1:]:
         return float("inf")
-    return float(np.max(np.abs(left.astype(np.float64) - right.astype(np.float64))))
+    prefix_length = min(left.shape[0], right.shape[0])
+    if prefix_length == 0:
+        return float("inf")
+    return float(
+        np.max(
+            np.abs(
+                left[:prefix_length].astype(np.float64)
+                - right[:prefix_length].astype(np.float64)
+            )
+        )
+    )
 
 
 def _read_nested_dataset(group: h5py.Group, dataset_path: str) -> np.ndarray | None:
@@ -182,13 +261,34 @@ def match_demo_key(
     candidates.sort(key=sort_key)
     best_demo_key, best_metrics = candidates[0]
 
-    joint_ok = np.isinf(best_metrics["joint_max_abs_err"]) or best_metrics["joint_max_abs_err"] <= joint_tolerance
-    state_ok = np.isinf(best_metrics["state_max_abs_err"]) or best_metrics["state_max_abs_err"] <= state_tolerance
+    def proprio_ok(metrics: dict[str, float | int]) -> bool:
+        joint_ok = np.isinf(metrics["joint_max_abs_err"]) or metrics["joint_max_abs_err"] <= joint_tolerance
+        state_ok = np.isinf(metrics["state_max_abs_err"]) or metrics["state_max_abs_err"] <= state_tolerance
+        return joint_ok and state_ok
+
     if (
         best_metrics["length_delta"] == 0
         and best_metrics["action_max_abs_err"] <= action_tolerance
-        and joint_ok
-        and state_ok
+        and proprio_ok(best_metrics)
+    ):
+        return best_demo_key, best_metrics
+
+    # Some RLDS exports preserve the same underlying trajectory but remap action
+    # conventions (for example, gripper open/close sign). When that happens,
+    # actions alone are not a safe exact-match signal, but a unique same-length
+    # proprio match still identifies the source demo deterministically.
+    proprio_candidates = [
+        (demo_key, metrics)
+        for demo_key, metrics in candidates
+        if metrics["length_delta"] == 0 and proprio_ok(metrics)
+    ]
+    if len(proprio_candidates) == 1 and proprio_candidates[0][0] == best_demo_key:
+        return best_demo_key, best_metrics
+
+    if (
+        best_metrics["length_delta"] <= 2
+        and proprio_ok(best_metrics)
+        and not np.isinf(best_metrics["action_max_abs_err"])
     ):
         return best_demo_key, best_metrics
 
@@ -642,6 +742,28 @@ def _backfill_next_highlight_targets(
     return tuple(highlighted_object_by_timestep)
 
 
+def build_grasp_sequence(
+    grasped_object_by_timestep: Sequence[str | None],
+) -> tuple[str, ...]:
+    grasp_sequence: list[str] = []
+    last_object: str | None = None
+    for object_name in grasped_object_by_timestep:
+        if object_name is None or object_name == last_object:
+            continue
+        grasp_sequence.append(object_name)
+        last_object = object_name
+    return tuple(grasp_sequence)
+
+
+def _first_demo_key(hdf5_path: str | Path) -> str:
+    with h5py.File(Path(hdf5_path).expanduser(), "r") as h5_file:
+        data_group = h5_file["data"]
+        demo_keys = sorted(data_group.keys(), key=_numeric_demo_sort_key)
+    if not demo_keys:
+        raise ValueError(f"No demos found in {hdf5_path}")
+    return demo_keys[0]
+
+
 def _postprocess_demo_model_xml(raw_model_xml: str, libero_postprocess_model_xml: Any) -> str:
     xml_with_robosuite_paths = libero_postprocess_model_xml(raw_model_xml, {})
     repo_root = _repo_root()
@@ -863,6 +985,31 @@ def build_next_object_highlight_plan(spec: DemoReplaySpec) -> NextObjectHighligh
         grasped_object_by_timestep=tuple(grasped_object_by_timestep),
         highlighted_object_by_timestep=_backfill_next_highlight_targets(grasped_object_by_timestep),
     )
+
+
+def build_grasp_order_from_demo_spec(spec: DemoReplaySpec) -> tuple[str, ...]:
+    """Extract the ordered object-grasp sequence from one successful demo."""
+
+    return build_grasp_sequence(build_next_object_highlight_plan(spec).grasped_object_by_timestep)
+
+
+def build_grasp_order_from_source_demo(
+    source_demo_file: str | Path,
+    *,
+    demo_key: str | None = None,
+) -> tuple[str, ...]:
+    """Extract the grasp order for a LIBERO task from one source HDF5 demo.
+
+    If `demo_key` is omitted, the first `demo_*` group in numeric order is used.
+    """
+
+    source_demo_path = Path(source_demo_file).expanduser().resolve()
+    resolved_demo_key = demo_key or _first_demo_key(source_demo_path)
+    spec = resolve_demo_replay_spec(
+        source_demo_file=source_demo_path,
+        demo_key=resolved_demo_key,
+    )
+    return build_grasp_order_from_demo_spec(spec)
 
 
 def render_next_object_highlighted_demo(

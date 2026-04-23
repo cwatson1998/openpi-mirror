@@ -5,10 +5,12 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from annotation.libero_demo_replay import OnlineNextObjectHighlightTracker
 from annotation.libero_demo_replay import RldsEpisode
 from annotation.libero_demo_replay import _backfill_next_highlight_targets
 from annotation.libero_demo_replay import _parse_rgb_triplet
 from annotation.libero_demo_replay import _select_grasped_object
+from annotation.libero_demo_replay import build_grasp_sequence
 from annotation.libero_demo_replay import match_demo_key
 from annotation.libero_demo_replay import resolve_demo_hdf5_path
 from annotation.libero_demo_replay import trace_bddl_file_resolution
@@ -73,6 +75,86 @@ def test_match_demo_key_uses_actions_and_proprio(tmp_path: Path) -> None:
     assert demo_key == "demo_1"
     assert metrics["length_delta"] == 0
     assert metrics["action_max_abs_err"] == 0.0
+    assert metrics["joint_max_abs_err"] == 0.0
+    assert metrics["state_max_abs_err"] == 0.0
+
+
+def test_match_demo_key_accepts_unique_proprio_match_when_actions_differ(tmp_path: Path) -> None:
+    hdf5_path = tmp_path / "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate_demo.hdf5"
+    with h5py.File(hdf5_path, "w") as h5_file:
+        data_group = h5_file.create_group("data")
+        data_group.attrs["bddl_file_name"] = "/tmp/task.bddl"
+
+        _write_demo(
+            data_group,
+            "demo_0",
+            actions=np.array([[0.0, -1.0], [0.1, -1.0]], dtype=np.float32),
+            joint_states=np.array([[1.0, 1.1], [1.2, 1.3]], dtype=np.float32),
+            state=np.array([[2.0] * 8, [2.1] * 8], dtype=np.float32),
+        )
+        _write_demo(
+            data_group,
+            "demo_1",
+            actions=np.array([[4.0, 5.0], [6.0, 7.0]], dtype=np.float32),
+            joint_states=np.array([[8.0, 8.1], [8.2, 8.3]], dtype=np.float32),
+            state=np.array([[9.0] * 8, [9.1] * 8], dtype=np.float32),
+        )
+
+    episode = RldsEpisode(
+        dataset_name="libero_spatial_no_noops",
+        episode_index=22,
+        source_demo_path_hint="/remote/path/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate_demo.hdf5",
+        task_instruction="pick up the black bowl from table center and place it on the plate",
+        actions=np.array([[0.0, 1.0], [0.1, 1.0]], dtype=np.float32),
+        joint_states=np.array([[1.0, 1.1], [1.2, 1.3]], dtype=np.float32),
+        state=np.array([[2.0] * 8, [2.1] * 8], dtype=np.float32),
+    )
+
+    demo_key, metrics = match_demo_key(hdf5_path, episode)
+
+    assert demo_key == "demo_0"
+    assert metrics["length_delta"] == 0
+    assert metrics["action_max_abs_err"] == 2.0
+    assert metrics["joint_max_abs_err"] == 0.0
+    assert metrics["state_max_abs_err"] == 0.0
+
+
+def test_match_demo_key_accepts_small_length_mismatch_using_prefix_metrics(tmp_path: Path) -> None:
+    hdf5_path = tmp_path / "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate_demo.hdf5"
+    with h5py.File(hdf5_path, "w") as h5_file:
+        data_group = h5_file.create_group("data")
+        data_group.attrs["bddl_file_name"] = "/tmp/task.bddl"
+
+        _write_demo(
+            data_group,
+            "demo_0",
+            actions=np.array([[0.0, -1.0], [0.1, -1.0], [0.2, -1.0]], dtype=np.float32),
+            joint_states=np.array([[1.0, 1.1], [1.2, 1.3], [1.4, 1.5]], dtype=np.float32),
+            state=np.array([[2.0] * 8, [2.1] * 8, [2.2] * 8], dtype=np.float32),
+        )
+        _write_demo(
+            data_group,
+            "demo_1",
+            actions=np.array([[0.0, -1.0], [0.1, -1.0], [0.2, -1.0]], dtype=np.float32),
+            joint_states=np.array([[4.0, 4.1], [4.2, 4.3], [4.4, 4.5]], dtype=np.float32),
+            state=np.array([[5.0] * 8, [5.1] * 8, [5.2] * 8], dtype=np.float32),
+        )
+
+    episode = RldsEpisode(
+        dataset_name="libero_spatial_no_noops",
+        episode_index=28,
+        source_demo_path_hint="/remote/path/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate_demo.hdf5",
+        task_instruction="pick up the black bowl from table center and place it on the plate",
+        actions=np.array([[0.0, 1.0], [0.1, 1.0]], dtype=np.float32),
+        joint_states=np.array([[1.0, 1.1], [1.2, 1.3]], dtype=np.float32),
+        state=np.array([[2.0] * 8, [2.1] * 8], dtype=np.float32),
+    )
+
+    demo_key, metrics = match_demo_key(hdf5_path, episode, joint_tolerance=0.5, state_tolerance=0.5)
+
+    assert demo_key == "demo_0"
+    assert metrics["length_delta"] == 1
+    assert metrics["action_max_abs_err"] == 2.0
     assert metrics["joint_max_abs_err"] == 0.0
     assert metrics["state_max_abs_err"] == 0.0
 
@@ -226,6 +308,50 @@ def test_backfill_next_highlight_targets_uses_current_or_next_grasp() -> None:
         "plate_1",
         None,
     )
+
+
+def test_build_grasp_sequence_deduplicates_consecutive_grasps() -> None:
+    grasp_sequence = build_grasp_sequence(
+        [None, "akita_black_bowl_1", "akita_black_bowl_1", None, "plate_1", "plate_1", "akita_black_bowl_1"]
+    )
+
+    assert grasp_sequence == ("akita_black_bowl_1", "plate_1", "akita_black_bowl_1")
+
+
+def test_online_next_object_highlight_tracker_advances_after_grasp_then_release_window() -> None:
+    tracker = OnlineNextObjectHighlightTracker(
+        grasp_order=("akita_black_bowl_1", "plate_1"),
+        min_grasp_steps=1,
+        release_steps=4,
+    )
+
+    assert tracker.current_object == "akita_black_bowl_1"
+    assert tracker.observe(is_current_object_grasped=False) is False
+    assert tracker.current_object == "akita_black_bowl_1"
+
+    assert tracker.observe(is_current_object_grasped=True) is False
+    assert tracker.current_object == "akita_black_bowl_1"
+
+    assert tracker.observe(is_current_object_grasped=False) is False
+    assert tracker.observe(is_current_object_grasped=False) is False
+    assert tracker.observe(is_current_object_grasped=False) is False
+    assert tracker.current_object == "akita_black_bowl_1"
+
+    assert tracker.observe(is_current_object_grasped=False) is True
+    assert tracker.current_object == "plate_1"
+
+
+def test_online_next_object_highlight_tracker_keeps_last_object_highlighted() -> None:
+    tracker = OnlineNextObjectHighlightTracker(
+        grasp_order=("akita_black_bowl_1",),
+        min_grasp_steps=1,
+        release_steps=4,
+    )
+
+    assert tracker.current_object == "akita_black_bowl_1"
+    assert tracker.observe(is_current_object_grasped=True) is False
+    assert tracker.observe(is_current_object_grasped=False) is False
+    assert tracker.current_object == "akita_black_bowl_1"
 
 
 def test_make_mask_comparison_frames_stacks_and_labels_frames() -> None:
