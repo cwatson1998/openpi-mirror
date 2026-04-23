@@ -10,6 +10,14 @@ uv run examples/libero/convert_libero_data_to_lerobot.py \
     --suite_names libero_object \
     --task_suite_name libero_object \
     --task_indices 0 1 2 3 4 5 6
+
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
+    examples/libero/convert_libero_data_to_lerobot.py \
+    --data_dir data/libero/raw \
+    --repo_name local/libero_spatial_next_object \
+    --suite_names libero_spatial \
+    --next-object-highlighting \
+    --demo-search-roots third_party/libero/libero/datasets
 """
 
 from collections import Counter
@@ -21,10 +29,19 @@ import shutil
 from huggingface_hub import snapshot_download
 from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+import numpy as np
 import tensorflow_datasets as tfds
 import tyro
 
+from annotation import RldsEpisode
+from annotation import render_next_object_highlighted_demo
+from annotation import resolve_demo_replay_spec_from_episode
 from openpi.training import libero as libero_utils
+
+_RLDS_TO_SIM_CAMERA_NAMES = {
+    "image": "agentview",
+    "wrist_image": "robot0_eye_in_hand",
+}
 
 
 def _download_raw_datasets(data_dir: pathlib.Path, raw_dataset_names: Sequence[str]) -> None:
@@ -44,6 +61,7 @@ def _write_subset_metadata(
     suite_names: Sequence[str],
     task_counts: Counter[str],
     skipped_task_counts: Counter[str],
+    next_object_highlighting: dict[str, object] | None = None,
 ) -> None:
     metadata = {
         "suite_names": list(suite_names),
@@ -51,9 +69,76 @@ def _write_subset_metadata(
         "selected_episode_counts": dict(sorted(task_counts.items())),
         "skipped_episode_counts": dict(sorted(skipped_task_counts.items())),
     }
+    if next_object_highlighting is not None:
+        metadata["next_object_highlighting"] = next_object_highlighting
     metadata_path = output_path / "meta" / "libero_subset.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+
+
+def _build_rlds_episode(
+    *,
+    dataset_name: str,
+    episode_index: int,
+    source_demo_path_hint: str,
+    task_instruction: str,
+    steps: Sequence[dict],
+) -> RldsEpisode:
+    return RldsEpisode(
+        dataset_name=dataset_name,
+        episode_index=episode_index,
+        source_demo_path_hint=source_demo_path_hint,
+        task_instruction=task_instruction,
+        actions=np.stack([step["action"] for step in steps], axis=0),
+        joint_states=np.stack([step["observation"]["joint_state"] for step in steps], axis=0),
+        state=np.stack([step["observation"]["state"] for step in steps], axis=0),
+    )
+
+
+def _render_next_object_highlighted_frames(
+    *,
+    dataset_name: str,
+    episode_index: int,
+    source_demo_path_hint: str,
+    task_instruction: str,
+    steps: Sequence[dict],
+    demo_search_roots: Sequence[str],
+    highlight_rgb: str,
+    highlight_alpha: float,
+) -> dict[str, np.ndarray]:
+    episode = _build_rlds_episode(
+        dataset_name=dataset_name,
+        episode_index=episode_index,
+        source_demo_path_hint=source_demo_path_hint,
+        task_instruction=task_instruction,
+        steps=steps,
+    )
+    spec = resolve_demo_replay_spec_from_episode(
+        episode,
+        demo_search_roots=list(demo_search_roots) or None,
+    )
+
+    if len(steps) != int(spec.states.shape[0]):
+        raise ValueError(
+            "The resolved source demo length does not match the RLDS episode length. "
+            f"Episode {episode_index} in {dataset_name} has {len(steps)} steps, but the matched demo "
+            f"{spec.demo_hdf5_path}:{spec.demo_key} has {int(spec.states.shape[0])} saved states."
+        )
+
+    camera_height = int(steps[0]["observation"]["image"].shape[0])
+    camera_width = int(steps[0]["observation"]["image"].shape[1])
+    render_result = render_next_object_highlighted_demo(
+        spec,
+        camera_names=[_RLDS_TO_SIM_CAMERA_NAMES["image"], _RLDS_TO_SIM_CAMERA_NAMES["wrist_image"]],
+        camera_height=camera_height,
+        camera_width=camera_width,
+        highlight_rgb=highlight_rgb,
+        highlight_alpha=highlight_alpha,
+    )
+    return {
+        "image": render_result.frames_by_camera[_RLDS_TO_SIM_CAMERA_NAMES["image"]],
+        "wrist_image": render_result.frames_by_camera[_RLDS_TO_SIM_CAMERA_NAMES["wrist_image"]],
+    }
 
 
 def main(
@@ -67,6 +152,10 @@ def main(
     task_names: Sequence[str] = (),
     task_split_file: str | None = None,
     task_split: str = "train",
+    next_object_highlighting: bool = False,
+    highlight_rgb: str = "255,105,180",
+    highlight_alpha: float = 1.0,
+    demo_search_roots: Sequence[str] = (),
     push_to_hub: bool = False,
 ):
     data_dir_path = pathlib.Path(data_dir).expanduser().resolve()
@@ -122,7 +211,7 @@ def main(
 
     for raw_dataset_name in raw_dataset_names:
         raw_dataset = tfds.load(raw_dataset_name, data_dir=str(data_dir_path), split="train")
-        for episode in raw_dataset:
+        for episode_index, episode in enumerate(raw_dataset):
             steps = list(episode["steps"].as_numpy_iterator())
             task_instruction = steps[-1]["language_instruction"].decode()
 
@@ -130,11 +219,35 @@ def main(
                 skipped_counts[task_instruction] += 1
                 continue
 
-            for step in steps:
+            highlighted_frames: dict[str, np.ndarray] | None = None
+            if next_object_highlighting:
+                # The train loader still expects the usual `image` / `wrist_image`
+                # keys, so we re-render only the RGB streams and keep the rest of
+                # the LeRobot episode schema unchanged.
+                highlighted_frames = _render_next_object_highlighted_frames(
+                    dataset_name=raw_dataset_name,
+                    episode_index=episode_index,
+                    source_demo_path_hint=episode["episode_metadata"]["file_path"].numpy().decode(),
+                    task_instruction=task_instruction,
+                    steps=steps,
+                    demo_search_roots=demo_search_roots,
+                    highlight_rgb=highlight_rgb,
+                    highlight_alpha=highlight_alpha,
+                )
+
+            for step_index, step in enumerate(steps):
                 dataset.add_frame(
                     {
-                        "image": step["observation"]["image"],
-                        "wrist_image": step["observation"]["wrist_image"],
+                        "image": (
+                            step["observation"]["image"]
+                            if highlighted_frames is None
+                            else highlighted_frames["image"][step_index]
+                        ),
+                        "wrist_image": (
+                            step["observation"]["wrist_image"]
+                            if highlighted_frames is None
+                            else highlighted_frames["wrist_image"][step_index]
+                        ),
                         "state": step["observation"]["state"],
                         "actions": step["action"],
                     }
@@ -152,6 +265,22 @@ def main(
         suite_names=suite_names,
         task_counts=written_counts,
         skipped_task_counts=skipped_counts,
+        next_object_highlighting=(
+            None
+            if not next_object_highlighting
+            else {
+                "enabled": True,
+                "highlight_rgb": [int(channel) for channel in highlight_rgb.split(",")],
+                "highlight_alpha": float(highlight_alpha),
+                "demo_search_roots": list(demo_search_roots),
+                "requires_source_hdf5": True,
+                "selection_rule": (
+                    "At each timestep, highlight the BDDL obj_of_interest instance "
+                    "from the nearest future timestep whose state is grasped. "
+                    "The current timestep counts."
+                ),
+            }
+        ),
     )
 
     if push_to_hub:

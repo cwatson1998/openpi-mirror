@@ -83,6 +83,23 @@ class RenderResult:
     max_abs_error: float | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class NextObjectHighlightPlan:
+    obj_of_interest: tuple[str, ...]
+    graspable_obj_of_interest: tuple[str, ...]
+    grasped_object_by_timestep: tuple[str | None, ...]
+    highlighted_object_by_timestep: tuple[str | None, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class NextObjectHighlightRenderResult:
+    frames_by_camera: dict[str, np.ndarray]
+    camera_names: tuple[str, ...]
+    highlight_rgb: tuple[int, int, int]
+    highlight_alpha: float
+    highlight_plan: NextObjectHighlightPlan
+
+
 def _numeric_demo_sort_key(name: str) -> tuple[str, int]:
     prefix, _, suffix = name.partition("_")
     if prefix == "demo" and suffix.isdigit():
@@ -372,6 +389,59 @@ def load_rlds_episode(
     raise IndexError(f"Episode index {episode_index} is out of range for dataset {dataset_name}.")
 
 
+def resolve_demo_replay_spec_from_episode(
+    episode: RldsEpisode,
+    *,
+    source_demo_file: str | Path | None = None,
+    demo_key: str | None = None,
+    demo_search_roots: list[str | Path] | None = None,
+    action_tolerance: float = 1e-6,
+    joint_tolerance: float = 0.1,
+    state_tolerance: float = 0.1,
+) -> DemoReplaySpec:
+    if source_demo_file is None:
+        source_demo_file = resolve_demo_hdf5_path(
+            episode.source_demo_path_hint,
+            dataset_name=episode.dataset_name,
+            demo_search_roots=demo_search_roots,
+        )
+
+    source_demo_file = Path(source_demo_file).expanduser().resolve()
+    matching_summary: dict[str, float | int | str] | None = None
+    with h5py.File(source_demo_file, "r") as h5_file:
+        data_group = h5_file["data"]
+        resolved_demo_key = demo_key
+        if resolved_demo_key is None:
+            resolved_demo_key, matching_metrics = match_demo_key(
+                source_demo_file,
+                episode,
+                action_tolerance=action_tolerance,
+                joint_tolerance=joint_tolerance,
+                state_tolerance=state_tolerance,
+            )
+            matching_summary = {"demo_key": resolved_demo_key, **matching_metrics}
+
+        demo_group = data_group[resolved_demo_key]
+        bddl_file_name = str(resolve_bddl_file_path(str(data_group.attrs["bddl_file_name"])))
+        model_xml = str(demo_group.attrs["model_file"])
+        recorded_agentview_frames = _read_nested_dataset(demo_group, "obs/agentview_rgb")
+        recorded_eye_in_hand_frames = _read_nested_dataset(demo_group, "obs/eye_in_hand_rgb")
+
+        return DemoReplaySpec(
+            demo_hdf5_path=source_demo_file,
+            demo_key=resolved_demo_key,
+            bddl_file_name=bddl_file_name,
+            model_xml=model_xml,
+            states=demo_group["states"][()],
+            actions=demo_group["actions"][()],
+            task_instruction=episode.task_instruction,
+            recorded_agentview_frames=recorded_agentview_frames,
+            recorded_eye_in_hand_frames=recorded_eye_in_hand_frames,
+            source_demo_path_hint=episode.source_demo_path_hint,
+            matching_summary=matching_summary,
+        )
+
+
 def resolve_demo_replay_spec(
     *,
     dataset_name: str | None = None,
@@ -397,48 +467,42 @@ def resolve_demo_replay_spec(
             data_dir=data_dir,
             episode_index=episode_index,
         )
-        source_demo_file = resolve_demo_hdf5_path(
-            episode.source_demo_path_hint,
-            dataset_name=episode.dataset_name,
+        return resolve_demo_replay_spec_from_episode(
+            episode,
+            source_demo_file=source_demo_file,
+            demo_key=demo_key,
             demo_search_roots=demo_search_roots,
+            action_tolerance=action_tolerance,
+            joint_tolerance=joint_tolerance,
+            state_tolerance=state_tolerance,
         )
 
     source_demo_file = Path(source_demo_file).expanduser().resolve()
-    matching_summary: dict[str, float | int | str] | None = None
     with h5py.File(source_demo_file, "r") as h5_file:
         data_group = h5_file["data"]
-        resolved_demo_key = demo_key
-        if resolved_demo_key is None:
-            if episode is None:
-                raise ValueError("`demo_key` is required when loading directly from a source HDF5.")
-            resolved_demo_key, matching_metrics = match_demo_key(
-                source_demo_file,
-                episode,
-                action_tolerance=action_tolerance,
-                joint_tolerance=joint_tolerance,
-                state_tolerance=state_tolerance,
-            )
-            matching_summary = {"demo_key": resolved_demo_key, **matching_metrics}
-
-        demo_group = data_group[resolved_demo_key]
+        if demo_key is None:
+            raise ValueError("`demo_key` is required when loading directly from a source HDF5.")
+        demo_group = data_group[demo_key]
         bddl_file_name = str(resolve_bddl_file_path(str(data_group.attrs["bddl_file_name"])))
         model_xml = str(demo_group.attrs["model_file"])
+        states = demo_group["states"][()]
+        actions = demo_group["actions"][()]
         recorded_agentview_frames = _read_nested_dataset(demo_group, "obs/agentview_rgb")
         recorded_eye_in_hand_frames = _read_nested_dataset(demo_group, "obs/eye_in_hand_rgb")
 
-        return DemoReplaySpec(
-            demo_hdf5_path=source_demo_file,
-            demo_key=resolved_demo_key,
-            bddl_file_name=bddl_file_name,
-            model_xml=model_xml,
-            states=demo_group["states"][()],
-            actions=demo_group["actions"][()],
-            task_instruction=episode.task_instruction if episode is not None else None,
-            recorded_agentview_frames=recorded_agentview_frames,
-            recorded_eye_in_hand_frames=recorded_eye_in_hand_frames,
-            source_demo_path_hint=episode.source_demo_path_hint if episode is not None else None,
-            matching_summary=matching_summary,
-        )
+    return DemoReplaySpec(
+        demo_hdf5_path=source_demo_file,
+        demo_key=demo_key,
+        bddl_file_name=bddl_file_name,
+        model_xml=model_xml,
+        states=states,
+        actions=actions,
+        task_instruction=None,
+        recorded_agentview_frames=recorded_agentview_frames,
+        recorded_eye_in_hand_frames=recorded_eye_in_hand_frames,
+        source_demo_path_hint=None,
+        matching_summary=None,
+    )
 
 
 def inspect_demo_replay_resolution(
@@ -553,6 +617,29 @@ def _parse_rgb_triplet(rgb_value: str | tuple[int, int, int] | list[int]) -> tup
     if rgb_array.shape != (3,):
         raise ValueError("Mask RGB must contain exactly three channels.")
     return tuple(int(channel) for channel in rgb_array)
+
+
+def _select_grasped_object(
+    candidate_names: Sequence[str],
+    is_grasped_by_name: dict[str, bool],
+) -> str | None:
+    for candidate_name in candidate_names:
+        if is_grasped_by_name.get(candidate_name, False):
+            return candidate_name
+    return None
+
+
+def _backfill_next_highlight_targets(
+    grasped_object_by_timestep: Sequence[str | None],
+) -> tuple[str | None, ...]:
+    highlighted_object_by_timestep: list[str | None] = [None] * len(grasped_object_by_timestep)
+    next_object: str | None = None
+    for timestep_index in range(len(grasped_object_by_timestep) - 1, -1, -1):
+        current_object = grasped_object_by_timestep[timestep_index]
+        if current_object is not None:
+            next_object = current_object
+        highlighted_object_by_timestep[timestep_index] = next_object
+    return tuple(highlighted_object_by_timestep)
 
 
 def _postprocess_demo_model_xml(raw_model_xml: str, libero_postprocess_model_xml: Any) -> str:
@@ -718,6 +805,139 @@ def render_demo(
         mask_rgb=mask_rgb,
         mask_alpha=mask_alpha,
         mask_camera_names=mask_camera_names,
+    )
+
+
+def build_next_object_highlight_plan(spec: DemoReplaySpec) -> NextObjectHighlightPlan:
+    """Compute the per-timestep "next object to highlight" schedule for a demo.
+
+    We inspect the restored simulator state at every saved timestep, record which
+    BDDL `obj_of_interest` instance is grasped at that state, then backfill the
+    nearest future grasp so steps before the grasp already highlight the upcoming
+    object. The current timestep counts, so if an object is already grasped at t
+    it is also the highlighted object for t.
+    """
+
+    offscreen_render_env_cls, _, libero_postprocess_model_xml = _load_libero_modules()
+    env = offscreen_render_env_cls(
+        bddl_file_name=spec.bddl_file_name,
+        camera_names=["agentview"],
+        camera_heights=1,
+        camera_widths=1,
+    )
+
+    try:
+        env.reset()
+        env.reset_from_xml_string(_postprocess_demo_model_xml(spec.model_xml, libero_postprocess_model_xml))
+        env.sim.reset()
+
+        obj_of_interest = tuple(str(name) for name in env.obj_of_interest)
+        graspable_obj_of_interest: list[str] = []
+        for object_name in obj_of_interest:
+            if object_name not in env.env.object_states_dict:
+                continue
+            try:
+                env.env.object_states_dict[object_name].is_grasped()
+            except NotImplementedError:
+                continue
+            graspable_obj_of_interest.append(object_name)
+
+        grasped_object_by_timestep: list[str | None] = []
+        for state in spec.states:
+            env.set_init_state(state)
+            # Preserve the BDDL ordering when choosing among candidate objects so
+            # the highlighting policy stays deterministic.
+            is_grasped_by_name = {
+                object_name: bool(env.env.object_states_dict[object_name].is_grasped())
+                for object_name in graspable_obj_of_interest
+            }
+            grasped_object_by_timestep.append(
+                _select_grasped_object(graspable_obj_of_interest, is_grasped_by_name)
+            )
+    finally:
+        env.close()
+
+    return NextObjectHighlightPlan(
+        obj_of_interest=obj_of_interest,
+        graspable_obj_of_interest=tuple(graspable_obj_of_interest),
+        grasped_object_by_timestep=tuple(grasped_object_by_timestep),
+        highlighted_object_by_timestep=_backfill_next_highlight_targets(grasped_object_by_timestep),
+    )
+
+
+def render_next_object_highlighted_demo(
+    spec: DemoReplaySpec,
+    *,
+    camera_names: Sequence[str] = ("agentview", "robot0_eye_in_hand"),
+    camera_height: int = 256,
+    camera_width: int = 256,
+    highlight_rgb: tuple[int, int, int] | list[int] | str = (255, 105, 180),
+    highlight_alpha: float = 1.0,
+) -> NextObjectHighlightRenderResult:
+    """Re-render a demo with the next future grasp target highlighted in RGB.
+
+    This is intended for dataset creation. It preserves the standard LIBERO /
+    OpenPI image keys, but replaces the stored RGB stream with fresh simulator
+    renders whose mask target changes over time based on the next future grasp of
+    a BDDL `obj_of_interest` object.
+    """
+
+    camera_names = tuple(camera_names)
+    if not camera_names:
+        raise ValueError("Provide at least one camera name.")
+
+    highlight_plan = build_next_object_highlight_plan(spec)
+    highlight_rgb_triplet = _parse_rgb_triplet(highlight_rgb)
+
+    _, masked_segmentation_env_cls, libero_postprocess_model_xml = _load_libero_modules()
+    env = masked_segmentation_env_cls(
+        bddl_file_name=spec.bddl_file_name,
+        camera_names=list(camera_names),
+        camera_heights=int(camera_height),
+        camera_widths=int(camera_width),
+    )
+
+    try:
+        env.reset()
+        env.reset_from_xml_string(_postprocess_demo_model_xml(spec.model_xml, libero_postprocess_model_xml))
+        env.sim.reset()
+
+        frames_by_camera = {camera_name: [] for camera_name in camera_names}
+        for timestep_index, state in enumerate(spec.states):
+            highlighted_object = highlight_plan.highlighted_object_by_timestep[timestep_index]
+            if highlighted_object is None:
+                env.clear_instance_mask()
+            else:
+                if highlighted_object not in env.instance_to_id:
+                    raise KeyError(
+                        "The highlighted object is not present in the segmentation mapping: "
+                        f"{highlighted_object}"
+                    )
+                env.set_instance_mask(
+                    highlighted_object,
+                    mask_rgb=highlight_rgb_triplet,
+                    mask_alpha=float(highlight_alpha),
+                    camera_names=list(camera_names),
+                )
+
+            observations = env.set_init_state(state)
+            for camera_name in camera_names:
+                observation_key = f"{camera_name}_image"
+                if observation_key not in observations:
+                    available = sorted(key for key in observations if key.endswith("_image"))
+                    raise KeyError(
+                        f"Camera `{camera_name}` not found in observations. Available image keys: {available}"
+                    )
+                frames_by_camera[camera_name].append(np.asarray(observations[observation_key], dtype=np.uint8))
+    finally:
+        env.close()
+
+    return NextObjectHighlightRenderResult(
+        frames_by_camera={camera_name: np.stack(frames, axis=0) for camera_name, frames in frames_by_camera.items()},
+        camera_names=camera_names,
+        highlight_rgb=highlight_rgb_triplet,
+        highlight_alpha=float(highlight_alpha),
+        highlight_plan=highlight_plan,
     )
 
 

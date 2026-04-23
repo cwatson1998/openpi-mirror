@@ -6,7 +6,9 @@ import h5py
 import numpy as np
 
 from annotation.libero_demo_replay import RldsEpisode
+from annotation.libero_demo_replay import _backfill_next_highlight_targets
 from annotation.libero_demo_replay import _parse_rgb_triplet
+from annotation.libero_demo_replay import _select_grasped_object
 from annotation.libero_demo_replay import match_demo_key
 from annotation.libero_demo_replay import resolve_demo_hdf5_path
 from annotation.libero_demo_replay import trace_bddl_file_resolution
@@ -197,6 +199,33 @@ def test_make_sanity_check_frames_supports_optional_masked_panel() -> None:
 def test_parse_rgb_triplet_accepts_string_and_sequence() -> None:
     assert _parse_rgb_triplet("1,2,3") == (1, 2, 3)
     assert _parse_rgb_triplet([4, 5, 6]) == (4, 5, 6)
+
+
+def test_select_grasped_object_uses_candidate_priority_order() -> None:
+    selected = _select_grasped_object(
+        ["akita_black_bowl_1", "plate_1", "cookie_box_1"],
+        {
+            "plate_1": True,
+            "akita_black_bowl_1": True,
+        },
+    )
+
+    assert selected == "akita_black_bowl_1"
+
+
+def test_backfill_next_highlight_targets_uses_current_or_next_grasp() -> None:
+    highlighted = _backfill_next_highlight_targets(
+        [None, None, "akita_black_bowl_1", None, "plate_1", None]
+    )
+
+    assert highlighted == (
+        "akita_black_bowl_1",
+        "akita_black_bowl_1",
+        "akita_black_bowl_1",
+        "plate_1",
+        "plate_1",
+        None,
+    )
 
 
 def test_make_mask_comparison_frames_stacks_and_labels_frames() -> None:
