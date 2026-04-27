@@ -116,6 +116,11 @@ def _render_next_object_highlighted_frames(
     spec = resolve_demo_replay_spec_from_episode(
         episode,
         demo_search_roots=list(demo_search_roots) or None,
+        # Full-suite RLDS exports can drift slightly from source HDF5 lengths and
+        # proprio traces after no-op filtering, so the rerender path needs more
+        # tolerance than the lightweight replay defaults.
+        joint_tolerance=2.0,
+        state_tolerance=1.2,
     )
 
     if len(steps) != int(spec.states.shape[0]):
