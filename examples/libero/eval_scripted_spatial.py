@@ -3,6 +3,10 @@
 Example:
 PYTHONPATH=third_party/libero MUJOCO_GL=osmesa examples/libero/.venv/bin/python \
   examples/libero/eval_scripted_spatial.py --args.num-trials-per-task 1
+
+PYTHONPATH=third_party/libero MUJOCO_GL=osmesa examples/libero/.venv/bin/python \
+  examples/libero/eval_scripted_spatial.py --args.task-suite-name libero_spatial_four_bowls \
+  --args.policy-version v2 --args.num-trials-per-task 1
 """
 
 from __future__ import annotations
@@ -11,23 +15,56 @@ import dataclasses
 from datetime import datetime
 from datetime import timezone
 import json
+import os
 import pathlib
 import time
 
 import imageio
-from libero.libero import benchmark
-from libero.libero.envs import OffScreenRenderEnv
 import numpy as np
+from scripted_spatial_four_bowls_policy import FourBowlSpatialPolicy
 from scripted_spatial_policy import DynamicSpatialPolicy
 from scripted_spatial_policy_v1 import SnapshotWaypointSpatialPolicy
 from scripted_spatial_policy_v3 import NoisyDynamicSpatialPolicy
 import tyro
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+def _ensure_repo_local_libero_config() -> None:
+    if "LIBERO_CONFIG_PATH" in os.environ:
+        return
+
+    config_root = _REPO_ROOT / ".cache/libero-openpi"
+    os.environ["LIBERO_CONFIG_PATH"] = str(config_root)
+    config_root.mkdir(parents=True, exist_ok=True)
+
+    config_path = config_root / "config.yaml"
+    if config_path.exists():
+        return
+
+    benchmark_root = _REPO_ROOT / "third_party/libero/libero/libero"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"assets: {benchmark_root / 'assets'}",
+                f"bddl_files: {benchmark_root / 'bddl_files'}",
+                f"benchmark_root: {benchmark_root}",
+                f"datasets: {_REPO_ROOT / 'third_party/libero/libero/datasets'}",
+                f"init_states: {benchmark_root / 'init_files'}",
+            ]
+        )
+        + "\n"
+    )
+
+
+_ensure_repo_local_libero_config()
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 
 
 @dataclasses.dataclass
 class Args:
+    task_suite_name: str = "libero_spatial"
     policy_version: str = "v2"
     task_indices: tuple[int, ...] = ()
     num_trials_per_task: int = 1
@@ -39,10 +76,18 @@ class Args:
     output_dir: str | None = None
 
 
-def _make_policy(version: str, *, rng: np.random.Generator):
+def _make_policy(
+    version: str,
+    *,
+    task_suite_name: str,
+    task_language: str,
+    rng: np.random.Generator,
+):
     if version == "v1":
         return SnapshotWaypointSpatialPolicy()
     if version == "v2":
+        if task_suite_name == "libero_spatial_four_bowls":
+            return FourBowlSpatialPolicy(task_language=task_language)
         return DynamicSpatialPolicy()
     if version == "v3":
         return NoisyDynamicSpatialPolicy(rng=rng)
@@ -53,7 +98,9 @@ def _task_bddl_path(task) -> pathlib.Path:
     return pathlib.Path("third_party/libero/libero/libero/bddl_files") / task.problem_folder / task.bddl_file
 
 
-def _make_env(task, args: Args) -> OffScreenRenderEnv:
+def _make_env(task, args: Args):
+    from libero.libero.envs import OffScreenRenderEnv
+
     return OffScreenRenderEnv(
         bddl_file_name=str(_task_bddl_path(task)),
         camera_heights=args.camera_resolution,
@@ -63,14 +110,17 @@ def _make_env(task, args: Args) -> OffScreenRenderEnv:
 
 
 def eval_scripted_spatial(args: Args) -> dict:
+    from libero.libero import benchmark
+
     np.random.seed(args.seed)
-    task_suite = benchmark.get_benchmark_dict()["libero_spatial"]()
+    task_suite = benchmark.get_benchmark_dict()[args.task_suite_name]()
     task_ids = list(args.task_indices) if args.task_indices else list(range(task_suite.n_tasks))
     run_started_at = datetime.now(timezone.utc).isoformat()  # noqa: UP017 - keep Python 3.10 compatibility
     output_dir = pathlib.Path(
-        args.output_dir or f"data/libero/runs/{run_started_at}_scripted_spatial_{args.policy_version}"
+        args.output_dir or f"data/libero/runs/{run_started_at}_{args.task_suite_name}_{args.policy_version}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+    max_steps = 700 if args.task_suite_name == "libero_spatial_four_bowls" and args.max_steps == 220 else args.max_steps
 
     task_results = []
     total_episodes = 0
@@ -88,7 +138,12 @@ def eval_scripted_spatial(args: Args) -> dict:
                 obs = env.reset()
                 obs = env.set_init_state(initial_states[episode_index])
                 policy_rng = np.random.default_rng(args.seed + task_id * 10_000 + episode_index)
-                policy = _make_policy(args.policy_version, rng=policy_rng)
+                policy = _make_policy(
+                    args.policy_version,
+                    task_suite_name=args.task_suite_name,
+                    task_language=task.language,
+                    rng=policy_rng,
+                )
                 replay_images = []
                 done = False
 
@@ -99,7 +154,7 @@ def eval_scripted_spatial(args: Args) -> dict:
 
                 policy.reset(env, obs)
                 policy_steps = 0
-                while not done and policy_steps < args.max_steps:
+                while not done and policy_steps < max_steps:
                     if args.save_videos and "agentview_image" in obs:
                         replay_images.append(np.asarray(obs["agentview_image"][::-1, ::-1]))
                     action = policy.action(env, obs)
@@ -148,6 +203,7 @@ def eval_scripted_spatial(args: Args) -> dict:
         "schema_version": 1,
         "status": "completed",
         "generated_at": run_started_at,
+        "task_suite_name": args.task_suite_name,
         "policy_version": args.policy_version,
         "task_indices": task_ids,
         "num_trials_per_task": args.num_trials_per_task,

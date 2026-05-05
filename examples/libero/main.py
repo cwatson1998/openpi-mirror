@@ -5,14 +5,11 @@ from datetime import timezone
 import json
 import logging
 import math
+import os
 import pathlib
 import time
 
 import imageio
-from libero.libero import benchmark
-from libero.libero import get_libero_path
-from libero.libero.envs import MaskedSegmentationRenderEnv
-from libero.libero.envs import OffScreenRenderEnv
 import numpy as np
 from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
@@ -23,6 +20,43 @@ import wandb
 from annotation import OnlineNextObjectHighlightTracker
 from annotation import build_grasp_order_from_source_demo
 from openpi.training import libero as libero_utils
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+def _ensure_repo_local_libero_config() -> None:
+    if "LIBERO_CONFIG_PATH" in os.environ:
+        return
+
+    config_root = _REPO_ROOT / ".cache/libero-openpi"
+    os.environ["LIBERO_CONFIG_PATH"] = str(config_root)
+    config_root.mkdir(parents=True, exist_ok=True)
+
+    config_path = config_root / "config.yaml"
+    if config_path.exists():
+        return
+
+    benchmark_root = _REPO_ROOT / "third_party/libero/libero/libero"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"assets: {benchmark_root / 'assets'}",
+                f"bddl_files: {benchmark_root / 'bddl_files'}",
+                f"benchmark_root: {benchmark_root}",
+                f"datasets: {_REPO_ROOT / 'third_party/libero/libero/datasets'}",
+                f"init_states: {benchmark_root / 'init_files'}",
+            ]
+        )
+        + "\n"
+    )
+
+
+_ensure_repo_local_libero_config()
+
+from libero.libero import benchmark  # noqa: E402
+from libero.libero import get_libero_path  # noqa: E402
+from libero.libero.envs import MaskedSegmentationRenderEnv  # noqa: E402
+from libero.libero.envs import OffScreenRenderEnv  # noqa: E402
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -43,7 +77,7 @@ class Args:
     # LIBERO environment-specific parameters
     #################################################################################################################
     task_suite_name: str = (
-        "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+        "libero_spatial"  # Task suite. Options include libero_spatial, libero_spatial_four_bowls, libero_object, libero_goal, libero_10, libero_90
     )
     task_indices: tuple[int, ...] = ()
     task_names: tuple[str, ...] = ()
@@ -538,6 +572,8 @@ def eval_libero(args: Args) -> None:
 
     if args.task_suite_name == "libero_spatial":
         max_steps = 220  # longest training demo has 193 steps
+    elif args.task_suite_name == "libero_spatial_four_bowls":
+        max_steps = 700
     elif args.task_suite_name == "libero_object":
         max_steps = 280  # longest training demo has 254 steps
     elif args.task_suite_name == "libero_goal":
