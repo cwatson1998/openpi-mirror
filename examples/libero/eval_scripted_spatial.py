@@ -20,6 +20,7 @@ from libero.libero.envs import OffScreenRenderEnv
 import numpy as np
 from scripted_spatial_policy import DynamicSpatialPolicy
 from scripted_spatial_policy_v1 import SnapshotWaypointSpatialPolicy
+from scripted_spatial_policy_v3 import NoisyDynamicSpatialPolicy
 import tyro
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
@@ -38,11 +39,13 @@ class Args:
     output_dir: str | None = None
 
 
-def _make_policy(version: str):
+def _make_policy(version: str, *, rng: np.random.Generator):
     if version == "v1":
         return SnapshotWaypointSpatialPolicy()
     if version == "v2":
         return DynamicSpatialPolicy()
+    if version == "v3":
+        return NoisyDynamicSpatialPolicy(rng=rng)
     raise ValueError(f"Unknown scripted policy version: {version}")
 
 
@@ -84,7 +87,8 @@ def eval_scripted_spatial(args: Args) -> dict:
                 start_time = time.perf_counter()
                 obs = env.reset()
                 obs = env.set_init_state(initial_states[episode_index])
-                policy = _make_policy(args.policy_version)
+                policy_rng = np.random.default_rng(args.seed + task_id * 10_000 + episode_index)
+                policy = _make_policy(args.policy_version, rng=policy_rng)
                 replay_images = []
                 done = False
 
