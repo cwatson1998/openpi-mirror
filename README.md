@@ -34,6 +34,13 @@ git clone --recurse-submodules git@github.com:Physical-Intelligence/openpi.git
 git submodule update --init --recursive
 ```
 
+This repo vendors some external projects under `third_party/` using Git
+submodules. In particular, `third_party/libero` is a checkout of the upstream
+[LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) repository pinned to
+a specific commit by the main OpenPI repo. If you need to modify LIBERO itself,
+make the change on a real branch inside `third_party/libero`, commit it in that
+submodule, then commit the updated submodule pointer in the main repo.
+
 We use [uv](https://docs.astral.sh/uv/) to manage Python dependencies. See the [uv installation instructions](https://docs.astral.sh/uv/getting-started/installation/) to set it up. Once uv is installed, run the following to set up the environment:
 
 ```bash

@@ -113,6 +113,15 @@ For simulator-backed dataset generation:
 - `examples/libero/convert_libero_data_to_lerobot.py --next-object-highlighting` re-renders LIBERO RGB observations with the nearest future grasp target highlighted
 - that path depends on `src/annotation/libero_demo_replay.py` to resolve RLDS episodes back to source HDF5 demos and restore saved MuJoCo `states`
 - it requires the original LIBERO source HDF5 demos under `third_party/libero/libero/datasets` or another explicit `--demo-search-roots` path; raw RLDS shards alone are not enough
+- current local suites with both layers available include:
+  - `libero_spatial`: RLDS under `data/libero/raw/libero_spatial_no_noops/1.0.0`, demos under `third_party/libero/libero/datasets/libero_spatial`
+  - `libero_10`: RLDS under `data/libero/raw/libero_10_no_noops/1.0.0`, demos under `third_party/libero/libero/datasets/libero_10`
+- the RLDS-to-HDF5 matcher in `src/annotation/libero_demo_replay.py` is intentionally tolerant to:
+  - small RLDS-vs-HDF5 length drift from no-op filtering
+  - gripper-action sign mismatches
+  - moderate proprio / state drift
+- tolerant matching helps identify the right source demo, but highlighted LeRobot conversion still requires the matched source demo to have the same saved-state length as the RLDS episode before it will rerender frames
+- if you tighten that matching logic, rerun `PYTHONPATH=src .venv/bin/python -m pytest src/annotation/testing/libero_demo_replay_test.py`
 
 For online next-object highlighting during LIBERO eval:
 

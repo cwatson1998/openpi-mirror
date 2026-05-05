@@ -73,6 +73,30 @@ That transform restores saved MuJoCo state, inspects the BDDL
 `obj_of_interest`, and re-renders the RGB stream with the nearest future
 grasp target highlighted.
 
+One important implementation detail is that RLDS episodes are not always an
+exact byte-for-byte mirror of the source HDF5 demo:
+
+- no-op filtering can change episode length by a small number of timesteps
+- the exported gripper action convention can differ in sign from the source
+  HDF5 actions
+- low-dimensional state can drift slightly even when the episode still matches
+  the correct source demo
+
+So `annotation.libero_demo_replay.match_demo_key(...)` is intentionally more
+tolerant than a strict equality check. If you change that matching logic, make
+sure the regression tests in `src/annotation/testing/libero_demo_replay_test.py`
+still cover:
+
+- exact same-length matches
+- sign-flipped gripper-action matches with matching proprio
+- small length mismatches where the overlapping prefix still identifies the
+  right source demo
+
+For highlighted LeRobot conversion, tolerant matching is only the source-demo
+resolution step. The converter still requires the resolved HDF5 demo to have
+the same number of saved states as the RLDS episode before it will rerender and
+write highlighted frames.
+
 ### Next Object Highlighting
 
 This repo now supports a simulator-backed "next object highlighting" transform
@@ -136,6 +160,76 @@ Important details:
 - this means the existing OpenPI training pipeline can train on the new dataset
   without special data-loader changes
 - the converter records the transform settings in `meta/libero_subset.json`
+
+#### Supported Suites
+
+This path is not specific to `libero_spatial`. It works for multiple LIBERO
+suites as long as both inputs are present locally:
+
+- raw RLDS shards under `data/libero/raw/<suite>_no_noops/...`
+- source demos under `third_party/libero/libero/datasets/<suite>/...`
+
+Examples:
+
+- `libero_spatial`:
+  - RLDS: `data/libero/raw/libero_spatial_no_noops/1.0.0`
+  - HDF5: `third_party/libero/libero/datasets/libero_spatial`
+- `libero_10`:
+  - RLDS: `data/libero/raw/libero_10_no_noops/1.0.0`
+  - HDF5: `third_party/libero/libero/datasets/libero_10`
+
+#### Rendering A Highlighted MP4 For One Episode
+
+When you want to spot-check the transform before building a whole dataset, it
+is often faster to re-render one RLDS episode and save an MP4.
+
+Example: render `libero_10` episode `10` for the task
+`put both moka pots on the stove` with a pink tint at `alpha=0.4`:
+
+```bash
+mkdir -p outputs/libero_10_moka_pots_highlight
+
+PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python - <<'PY'
+from pathlib import Path
+import imageio.v2 as imageio
+
+from annotation.libero_demo_replay import load_rlds_episode
+from annotation.libero_demo_replay import render_next_object_highlighted_demo
+from annotation.libero_demo_replay import resolve_demo_replay_spec_from_episode
+
+output_dir = Path("outputs/libero_10_moka_pots_highlight")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+episode = load_rlds_episode(
+    dataset_name="libero_10_no_noops",
+    data_dir="data/libero/raw",
+    episode_index=10,
+)
+spec = resolve_demo_replay_spec_from_episode(
+    episode,
+    demo_search_roots=["third_party/libero/libero/datasets"],
+    joint_tolerance=2.0,
+    state_tolerance=1.2,
+)
+rendered = render_next_object_highlighted_demo(
+    spec,
+    camera_names=["agentview"],
+    camera_height=256,
+    camera_width=256,
+    highlight_rgb="255,105,180",
+    highlight_alpha=0.4,
+)
+
+imageio.mimsave(
+    output_dir / "episode_010_agentview_tinted.mp4",
+    rendered.frames_by_camera["agentview"],
+    fps=10,
+)
+PY
+```
+
+That gives you a simulator-backed highlighted video for one real RLDS episode
+without committing to a full RLDS-to-LeRobot conversion first.
 
 #### What Inputs This Requires
 

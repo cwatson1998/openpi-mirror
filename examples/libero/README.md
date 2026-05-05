@@ -10,6 +10,13 @@ This example requires git submodules to be initialized. Don't forget to run:
 git submodule update --init --recursive
 ```
 
+`third_party/libero` is not a plain copied directory. It is the LIBERO upstream
+repo vendored into OpenPI as a Git submodule, so the main repo records only the
+submodule URL and pinned commit. Treat local LIBERO edits as submodule work:
+create or switch to a branch inside `third_party/libero`, commit those changes
+there first, and then commit the updated `third_party/libero` pointer from the
+OpenPI repo.
+
 ## With Docker
 
 ```bash
@@ -206,7 +213,18 @@ Notes:
 - `--highlight-alpha` controls blending strength
 - this transform requires the original LIBERO source HDF5 demos, not just the
   RLDS shards, because the replay uses saved MuJoCo `states`
+- in practice, full-suite conversion also relies on tolerant RLDS-to-HDF5
+  matching in `annotation.libero_demo_replay`, because no-noops exports can
+  differ slightly in length, gripper-action sign, or low-dimensional state
+- tolerant matching is only used to identify the source demo; highlighted
+  conversion still requires the matched demo's saved-state length to equal the
+  RLDS episode length before it will rerender frames
 - the converter records the transform settings in `meta/libero_subset.json`
+
+If you only want to spot-check a single episode before building a full
+highlighted dataset, the annotation tooling can also re-render one RLDS episode
+to MP4 directly. See the "Rendering A Highlighted MP4 For One Episode" example
+in [`src/annotation/README.md`](../../src/annotation/README.md).
 
 ## Predicate Work
 
