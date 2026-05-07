@@ -5,6 +5,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from annotation.libero_demo_replay import NextObjectHighlightPlan
 from annotation.libero_demo_replay import OnlineNextObjectHighlightTracker
 from annotation.libero_demo_replay import RldsEpisode
 from annotation.libero_demo_replay import _backfill_next_highlight_targets
@@ -12,6 +13,8 @@ from annotation.libero_demo_replay import _compute_placement_targets_by_timestep
 from annotation.libero_demo_replay import _parse_rgb_triplet
 from annotation.libero_demo_replay import _select_grasped_object
 from annotation.libero_demo_replay import build_grasp_sequence
+from annotation.libero_demo_replay import build_online_next_object_annotation_plan
+from annotation.libero_demo_replay import draw_placement_dot_on_observations
 from annotation.libero_demo_replay import match_demo_key
 from annotation.libero_demo_replay import resolve_demo_hdf5_path
 from annotation.libero_demo_replay import trace_bddl_file_resolution
@@ -377,6 +380,85 @@ def test_build_grasp_sequence_deduplicates_consecutive_grasps() -> None:
     )
 
     assert grasp_sequence == ("akita_black_bowl_1", "plate_1", "akita_black_bowl_1")
+
+
+def test_build_online_next_object_annotation_plan_keeps_targets_aligned_with_grasps() -> None:
+    plan = build_online_next_object_annotation_plan(
+        NextObjectHighlightPlan(
+            obj_of_interest=("akita_black_bowl_1", "plate_1"),
+            graspable_obj_of_interest=("akita_black_bowl_1", "plate_1"),
+            grasped_object_by_timestep=(
+                None,
+                "akita_black_bowl_1",
+                "akita_black_bowl_1",
+                None,
+                "plate_1",
+                "akita_black_bowl_1",
+            ),
+            highlighted_object_by_timestep=(
+                "akita_black_bowl_1",
+                "akita_black_bowl_1",
+                "akita_black_bowl_1",
+                "plate_1",
+                "plate_1",
+                "akita_black_bowl_1",
+            ),
+            placement_target_by_timestep=(
+                (1.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (3.0, 0.0, 0.0),
+            ),
+        )
+    )
+
+    assert plan.grasp_order == ("akita_black_bowl_1", "plate_1", "akita_black_bowl_1")
+    assert plan.placement_targets == ((1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0))
+
+
+class _FakeCameraModel:
+    cam_fovy = np.asarray([90.0], dtype=np.float64)
+
+    @staticmethod
+    def camera_name2id(camera_name: str) -> int:
+        if camera_name != "agentview":
+            raise KeyError(camera_name)
+        return 0
+
+
+class _FakeCameraData:
+    cam_xpos = np.asarray([[0.0, 0.0, 0.0]], dtype=np.float64)
+    cam_xmat = np.asarray([[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float64)
+
+
+class _FakeCameraSim:
+    model = _FakeCameraModel()
+    data = _FakeCameraData()
+
+
+class _FakeCameraEnv:
+    sim = _FakeCameraSim()
+
+
+def test_draw_placement_dot_on_observations_projects_target_into_camera() -> None:
+    observations = {"agentview_image": np.zeros((9, 9, 3), dtype=np.uint8)}
+
+    drawn = draw_placement_dot_on_observations(
+        _FakeCameraEnv(),
+        observations,
+        placement_target=(0.0, 0.0, -1.0),
+        camera_names=["agentview"],
+        dot_rgb=(0, 96, 255),
+        dot_alpha=1.0,
+        dot_radius_px=1,
+    )
+
+    assert drawn is not observations
+    assert np.array_equal(observations["agentview_image"], np.zeros((9, 9, 3), dtype=np.uint8))
+    assert np.array_equal(drawn["agentview_image"][4, 4], np.asarray([0, 96, 255], dtype=np.uint8))
+    assert np.count_nonzero(drawn["agentview_image"]) > 0
 
 
 def test_online_next_object_highlight_tracker_advances_after_grasp_then_release_window() -> None:

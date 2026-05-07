@@ -138,6 +138,10 @@ This eval entrypoint now also supports online next-object highlighting:
 - `--next-object-highlight-rgb-csv`
 - `--next-object-highlight-alpha`
 - `--next-object-highlight-release-steps`
+- `--next-object-placement-dot`
+- `--placement-dot-rgb-csv`
+- `--placement-dot-alpha`
+- `--placement-dot-radius-px`
 
 That mode:
 
@@ -146,11 +150,14 @@ That mode:
 - advances to the next target only after the current highlighted object has been
   grasped and then released for the configured number of consecutive timesteps
 - keeps the last grasp target highlighted until the episode ends
+- optionally draws a projected placement-target dot from the same source-demo
+  plan
 
 This is meant to match the highlighted-dataset training setup as closely as
 possible, but note the caveat from the annotation docs: the training dataset
 uses an offline future-grasp oracle, while live eval must rely on this simpler
-state-machine approximation.
+state-machine approximation. This online path currently fails early for suites
+other than `libero_spatial`.
 
 ## Dataset Conversion
 

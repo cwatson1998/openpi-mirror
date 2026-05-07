@@ -18,8 +18,10 @@ import tqdm
 import tyro
 import wandb
 
+from annotation import OnlineNextObjectAnnotationPlan
 from annotation import OnlineNextObjectHighlightTracker
-from annotation import build_grasp_order_from_source_demo
+from annotation import build_online_next_object_annotation_plan_from_source_demo
+from annotation import draw_placement_dot_on_observations
 from openpi.training import libero as libero_utils
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -78,9 +80,7 @@ class Args:
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
-    task_suite_name: str = (
-        "libero_spatial"  # Task suite. Options include libero_spatial, libero_spatial_four_bowls, libero_object, libero_goal, libero_10, libero_90
-    )
+    task_suite_name: str = "libero_spatial"  # Task suite. Options include libero_spatial, libero_spatial_four_bowls, libero_object, libero_goal, libero_10, libero_90
     task_indices: tuple[int, ...] = ()
     task_names: tuple[str, ...] = ()
     task_split_file: str | None = None
@@ -95,6 +95,10 @@ class Args:
     next_object_highlight_rgb_csv: str = "255,105,180"  # RGB color used for next-object highlighting.
     next_object_highlight_alpha: float = 1.0  # Alpha used to blend highlighted pixels.
     next_object_highlight_release_steps: int = 4  # Consecutive non-grasped steps required before advancing.
+    next_object_placement_dot: bool = False  # Draw a dot at the demo-derived placement target for the active object.
+    placement_dot_rgb_csv: str = "0,96,255"  # RGB color used for the placement target dot.
+    placement_dot_alpha: float = 1.0  # Alpha used to blend the placement target dot.
+    placement_dot_radius_px: int = 5  # Radius of the placement target dot in raw simulator pixels.
 
     #################################################################################################################
     # Utils
@@ -153,6 +157,33 @@ def _parse_rgb_csv(csv_value: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in parts)
 
 
+def _validate_alpha(name: str, value: float) -> None:
+    if not 0.0 <= float(value) <= 1.0:
+        raise ValueError(f"{name} must lie in [0.0, 1.0].")
+
+
+def _validate_online_next_object_args(args: Args) -> None:
+    online_annotation_requested = args.next_object_highlighting or args.next_object_placement_dot
+    if not online_annotation_requested:
+        return
+    if args.task_suite_name != "libero_spatial":
+        raise ValueError(
+            "Online next-object highlighting and placement dots are currently supported only for "
+            f"`libero_spatial`, got `{args.task_suite_name}`."
+        )
+    if args.next_object_placement_dot and not args.next_object_highlighting:
+        raise ValueError("`next_object_placement_dot` requires `next_object_highlighting`.")
+    if args.next_object_highlight_release_steps <= 0:
+        raise ValueError("next_object_highlight_release_steps must be positive.")
+    _validate_alpha("next_object_highlight_alpha", args.next_object_highlight_alpha)
+    _parse_rgb_csv(args.next_object_highlight_rgb_csv)
+    if args.next_object_placement_dot:
+        _validate_alpha("placement_dot_alpha", args.placement_dot_alpha)
+        _parse_rgb_csv(args.placement_dot_rgb_csv)
+        if args.placement_dot_radius_px <= 0:
+            raise ValueError("placement_dot_radius_px must be positive.")
+
+
 def _default_eval_wandb_name(args: Args) -> str:
     checkpoint_name = pathlib.Path(args.checkpoint_dir).name if args.checkpoint_dir else "unknown_ckpt"
     train_run_name = args.train_run_name or (
@@ -185,6 +216,10 @@ def _init_wandb(args: Args) -> None:
             "next_object_highlight_rgb_csv": args.next_object_highlight_rgb_csv,
             "next_object_highlight_alpha": args.next_object_highlight_alpha,
             "next_object_highlight_release_steps": args.next_object_highlight_release_steps,
+            "next_object_placement_dot": args.next_object_placement_dot,
+            "placement_dot_rgb_csv": args.placement_dot_rgb_csv,
+            "placement_dot_alpha": args.placement_dot_alpha,
+            "placement_dot_radius_px": args.placement_dot_radius_px,
             "replan_steps": args.replan_steps,
             "resize_size": args.resize_size,
             "seed": args.seed,
@@ -406,6 +441,7 @@ def _build_task_result(
     task_successes: int,
     episode_results: list[dict],
     next_object_grasp_order: tuple[str, ...] = (),
+    next_object_placement_targets: tuple[tuple[float, float, float] | None, ...] = (),
 ) -> dict:
     return {
         "task_id": task_id,
@@ -414,6 +450,9 @@ def _build_task_result(
         "successes": task_successes,
         "success_rate": float(task_successes) / float(task_episodes) if task_episodes else 0.0,
         "next_object_grasp_order": list(next_object_grasp_order),
+        "next_object_placement_targets": [
+            None if target is None else [float(value) for value in target] for target in next_object_placement_targets
+        ],
         "episode_results": episode_results,
     }
 
@@ -452,6 +491,10 @@ def _build_results_payload(
         "next_object_highlight_rgb_csv": args.next_object_highlight_rgb_csv,
         "next_object_highlight_alpha": args.next_object_highlight_alpha,
         "next_object_highlight_release_steps": args.next_object_highlight_release_steps,
+        "next_object_placement_dot": args.next_object_placement_dot,
+        "placement_dot_rgb_csv": args.placement_dot_rgb_csv,
+        "placement_dot_alpha": args.placement_dot_alpha,
+        "placement_dot_radius_px": args.placement_dot_radius_px,
         "host": args.host,
         "port": args.port,
         "video_out_path": str(video_out_path),
@@ -534,12 +577,20 @@ def _highlight_camera_names(args: Args) -> list[str]:
     return camera_names or ["agentview", "robot0_eye_in_hand"]
 
 
-def _resolve_online_grasp_order(task_suite, task_id: int) -> tuple[str, ...]:
+def _resolve_online_annotation_plan(task_suite, task_id: int) -> OnlineNextObjectAnnotationPlan:
     datasets_root = pathlib.Path(get_libero_path("datasets"))
     source_demo_path = datasets_root / task_suite.get_task_demonstration(task_id)
-    grasp_order = build_grasp_order_from_source_demo(source_demo_path)
-    logging.info("Resolved online next-object grasp order from %s: %s", source_demo_path, list(grasp_order))
-    return grasp_order
+    annotation_plan = build_online_next_object_annotation_plan_from_source_demo(source_demo_path)
+    logging.info(
+        "Resolved online next-object plan from %s: grasp_order=%s placement_targets=%s",
+        source_demo_path,
+        list(annotation_plan.grasp_order),
+        [
+            None if target is None else [float(value) for value in target]
+            for target in annotation_plan.placement_targets
+        ],
+    )
+    return annotation_plan
 
 
 def _apply_online_highlight_mask(
@@ -575,9 +626,7 @@ def _update_online_highlight_tracker(
     if current_object not in env.env.object_states_dict:
         raise KeyError(f"Current highlighted object `{current_object}` is missing from the live environment.")
 
-    advanced = tracker.observe(
-        is_current_object_grasped=bool(env.env.object_states_dict[current_object].is_grasped())
-    )
+    advanced = tracker.observe(is_current_object_grasped=bool(env.env.object_states_dict[current_object].is_grasped()))
     if not advanced:
         return obs
 
@@ -587,7 +636,43 @@ def _update_online_highlight_tracker(
     return env.regenerate_obs_from_state(env.get_sim_state())
 
 
+def _current_online_placement_target(
+    tracker: OnlineNextObjectHighlightTracker | None,
+    annotation_plan: OnlineNextObjectAnnotationPlan | None,
+) -> tuple[float, float, float] | None:
+    if tracker is None or annotation_plan is None or tracker.current_object is None:
+        return None
+    if tracker.current_index >= len(annotation_plan.placement_targets):
+        raise IndexError(
+            "The online next-object tracker advanced beyond the demo-derived placement target sequence: "
+            f"index={tracker.current_index}, targets={len(annotation_plan.placement_targets)}."
+        )
+    return annotation_plan.placement_targets[tracker.current_index]
+
+
+def _apply_online_placement_dot(
+    env: MaskedSegmentationRenderEnv,
+    obs: dict,
+    tracker: OnlineNextObjectHighlightTracker | None,
+    annotation_plan: OnlineNextObjectAnnotationPlan | None,
+    args: Args,
+) -> dict:
+    if not args.next_object_placement_dot:
+        return obs
+
+    return draw_placement_dot_on_observations(
+        env,
+        obs,
+        placement_target=_current_online_placement_target(tracker, annotation_plan),
+        camera_names=_highlight_camera_names(args),
+        dot_rgb=_parse_rgb_csv(args.placement_dot_rgb_csv),
+        dot_alpha=float(args.placement_dot_alpha),
+        dot_radius_px=int(args.placement_dot_radius_px),
+    )
+
+
 def eval_libero(args: Args) -> None:
+    _validate_online_next_object_args(args)
     # Set random seed
     np.random.seed(args.seed)
     _init_wandb(args)
@@ -621,8 +706,7 @@ def eval_libero(args: Args) -> None:
         with pathlib.Path(args.prompt_override_file).open() as f:
             override_data = json.load(f)
         prompt_overrides = {
-            entry["task_instruction"]: entry["logic_task_description"]
-            for entry in override_data["tasks"]
+            entry["task_instruction"]: entry["logic_task_description"] for entry in override_data["tasks"]
         }
         logging.info(f"Loaded {len(prompt_overrides)} prompt overrides from {args.prompt_override_file}")
 
@@ -635,13 +719,17 @@ def eval_libero(args: Args) -> None:
             run_tag += "_logic"
         if args.next_object_highlighting:
             run_tag += "_next_object"
+        if args.next_object_placement_dot:
+            run_tag += "_placement_dot"
         video_out_path = pathlib.Path("data/libero/runs") / f"{timestamp}_{run_tag}"
     video_out_path.mkdir(parents=True, exist_ok=True)
     logging.info(f"Run output directory: {video_out_path}")
 
     results_out_path = pathlib.Path(args.results_out_path) if args.results_out_path else video_out_path / "results.json"
     results_out_path.parent.mkdir(parents=True, exist_ok=True)
-    progress_out_path = pathlib.Path(args.progress_out_path) if args.progress_out_path else video_out_path / "eval_progress.json"
+    progress_out_path = (
+        pathlib.Path(args.progress_out_path) if args.progress_out_path else video_out_path / "eval_progress.json"
+    )
     progress_out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.task_suite_name == "libero_spatial":
@@ -688,9 +776,9 @@ def eval_libero(args: Args) -> None:
         # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed, args)
         task_description = prompt_overrides.get(task_description, task_description)
-        next_object_grasp_order = ()
+        online_annotation_plan = None
         if args.next_object_highlighting:
-            next_object_grasp_order = _resolve_online_grasp_order(task_suite, task_id)
+            online_annotation_plan = _resolve_online_annotation_plan(task_suite, task_id)
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -705,7 +793,7 @@ def eval_libero(args: Args) -> None:
             highlight_tracker = None
             if args.next_object_highlighting:
                 highlight_tracker = OnlineNextObjectHighlightTracker(
-                    grasp_order=tuple(next_object_grasp_order),
+                    grasp_order=tuple(online_annotation_plan.grasp_order if online_annotation_plan is not None else ()),
                     min_grasp_steps=1,
                     release_steps=args.next_object_highlight_release_steps,
                 )
@@ -713,6 +801,8 @@ def eval_libero(args: Args) -> None:
 
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
+            if args.next_object_highlighting:
+                obs = _apply_online_placement_dot(env, obs, highlight_tracker, online_annotation_plan, args)
 
             # Setup
             t = 0
@@ -736,6 +826,7 @@ def eval_libero(args: Args) -> None:
                         obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
                         if args.next_object_highlighting:
                             obs = _update_online_highlight_tracker(env, obs, highlight_tracker, args)
+                            obs = _apply_online_placement_dot(env, obs, highlight_tracker, online_annotation_plan, args)
                         t += 1
                         wait_steps_taken += 1
                         continue
@@ -786,6 +877,7 @@ def eval_libero(args: Args) -> None:
                     obs, reward, done, info = env.step(action.tolist())
                     if args.next_object_highlighting:
                         obs = _update_online_highlight_tracker(env, obs, highlight_tracker, args)
+                        obs = _apply_online_placement_dot(env, obs, highlight_tracker, online_annotation_plan, args)
                     t += 1
                     policy_steps_taken += 1
                     if done:
@@ -871,7 +963,14 @@ def eval_libero(args: Args) -> None:
                         task_description=task_description,
                         task_episodes=task_episodes,
                         task_successes=task_successes,
-                        next_object_grasp_order=tuple(next_object_grasp_order),
+                        next_object_grasp_order=(
+                            tuple(online_annotation_plan.grasp_order) if online_annotation_plan is not None else ()
+                        ),
+                        next_object_placement_targets=(
+                            tuple(online_annotation_plan.placement_targets)
+                            if online_annotation_plan is not None
+                            else ()
+                        ),
                         episode_results=episode_results,
                     ),
                 ],
@@ -920,7 +1019,12 @@ def eval_libero(args: Args) -> None:
                 task_description=task_description,
                 task_episodes=task_episodes,
                 task_successes=task_successes,
-                next_object_grasp_order=tuple(next_object_grasp_order),
+                next_object_grasp_order=(
+                    tuple(online_annotation_plan.grasp_order) if online_annotation_plan is not None else ()
+                ),
+                next_object_placement_targets=(
+                    tuple(online_annotation_plan.placement_targets) if online_annotation_plan is not None else ()
+                ),
                 episode_results=episode_results,
             )
         )

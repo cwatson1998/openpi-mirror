@@ -271,13 +271,12 @@ run_checkpoint_eval() {
   local -a extra_eval_args=()
 
   if [[ "${short_name}" == "target-dot-from-libero" ]]; then
-    # The current online eval path can reproduce the next-object pink highlight.
-    # It does not yet reproduce the placement blue dot.
     extra_eval_args=(
       --args.next-object-highlighting
+      --args.next-object-placement-dot
       --args.next-object-highlight-alpha 0.4
     )
-    eval_obs_tag="obs_highlight_a04_no_dot"
+    eval_obs_tag="obs_highlight_a04_dot"
   fi
 
   local wandb_tags

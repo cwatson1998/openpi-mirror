@@ -301,9 +301,27 @@ So exact train-time highlighting is not directly available online unless you add
 some separate mechanism that predicts or chooses the next object to highlight at
 test time.
 
+The eval path now includes a `libero_spatial`-only approximation of that
+mechanism in `examples/libero/main.py`:
+
+```bash
+PYTHONPATH=src:packages/openpi-client/src:third_party/libero \
+  examples/libero/.venv/bin/python examples/libero/main.py \
+  --args.task-suite-name libero_spatial \
+  --args.next-object-highlighting \
+  --args.next-object-placement-dot \
+  --args.next-object-highlight-alpha 0.4
+```
+
+It derives the grasp order and placement targets from one source HDF5 demo for
+each task, highlights the current target online, advances after grasp/release,
+and optionally draws the projected placement dot into the policy-facing RGB
+observations. It intentionally raises an error for suites other than
+`libero_spatial`.
+
 That means "next object highlighting" is best understood as a dataset-generation
-tool plus a representation experiment, not a drop-in standalone deployment
-feature.
+tool plus a representation experiment with a matching eval-time approximation,
+not a drop-in standalone deployment feature.
 
 ### `annotation.libero_episode_sanity_check`
 

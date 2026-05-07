@@ -106,6 +106,16 @@ class NextObjectHighlightRenderResult:
     placement_dot_radius_px: int | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class OnlineNextObjectAnnotationPlan:
+    """Demo-derived target sequence used by live eval-time highlighting."""
+
+    obj_of_interest: tuple[str, ...]
+    graspable_obj_of_interest: tuple[str, ...]
+    grasp_order: tuple[str, ...]
+    placement_targets: tuple[tuple[float, float, float] | None, ...]
+
+
 @dataclasses.dataclass
 class OnlineNextObjectHighlightTracker:
     """Tracks which object should be highlighted during a live rollout.
@@ -781,6 +791,50 @@ def _draw_placement_dot(
     return output
 
 
+def draw_placement_dot_on_observations(
+    env: Any,
+    observations: dict,
+    *,
+    placement_target: tuple[float, float, float] | None,
+    camera_names: Sequence[str],
+    dot_rgb: tuple[int, int, int] | list[int] | str = (0, 96, 255),
+    dot_alpha: float = 1.0,
+    dot_radius_px: int = 5,
+) -> dict:
+    """Return observations with a placement-target dot drawn into selected RGB cameras."""
+
+    if placement_target is None:
+        return observations
+    if dot_radius_px <= 0:
+        raise ValueError("dot_radius_px must be positive.")
+
+    dot_rgb_triplet = _parse_rgb_triplet(dot_rgb)
+    _validate_alpha(float(dot_alpha))
+    processed = dict(observations)
+    for camera_name in camera_names:
+        observation_key = f"{camera_name}_image"
+        if observation_key not in observations:
+            available = sorted(key for key in observations if key.endswith("_image"))
+            raise KeyError(f"Camera `{camera_name}` not found in observations. Available image keys: {available}")
+
+        frame = np.asarray(observations[observation_key], dtype=np.uint8)
+        image_height, image_width = frame.shape[:2]
+        processed[observation_key] = _draw_placement_dot(
+            frame,
+            center_xy=_project_world_position_to_pixel(
+                env,
+                camera_name=camera_name,
+                world_position=placement_target,
+                image_height=int(image_height),
+                image_width=int(image_width),
+            ),
+            dot_rgb=dot_rgb_triplet,
+            dot_alpha=float(dot_alpha),
+            dot_radius_px=int(dot_radius_px),
+        )
+    return processed
+
+
 def _select_grasped_object(
     candidate_names: Sequence[str],
     is_grasped_by_name: dict[str, bool],
@@ -872,6 +926,29 @@ def build_grasp_sequence(
         grasp_sequence.append(object_name)
         last_object = object_name
     return tuple(grasp_sequence)
+
+
+def build_online_next_object_annotation_plan(
+    highlight_plan: NextObjectHighlightPlan,
+) -> OnlineNextObjectAnnotationPlan:
+    """Convert the offline per-timestep plan into the sequence a live rollout can track."""
+
+    grasp_order: list[str] = []
+    placement_targets: list[tuple[float, float, float] | None] = []
+    last_object: str | None = None
+    for timestep_index, object_name in enumerate(highlight_plan.grasped_object_by_timestep):
+        if object_name is None or object_name == last_object:
+            continue
+        grasp_order.append(object_name)
+        placement_targets.append(highlight_plan.placement_target_by_timestep[timestep_index])
+        last_object = object_name
+
+    return OnlineNextObjectAnnotationPlan(
+        obj_of_interest=highlight_plan.obj_of_interest,
+        graspable_obj_of_interest=highlight_plan.graspable_obj_of_interest,
+        grasp_order=tuple(grasp_order),
+        placement_targets=tuple(placement_targets),
+    )
 
 
 def _first_demo_key(hdf5_path: str | Path) -> str:
@@ -1117,6 +1194,12 @@ def build_grasp_order_from_demo_spec(spec: DemoReplaySpec) -> tuple[str, ...]:
     return build_grasp_sequence(build_next_object_highlight_plan(spec).grasped_object_by_timestep)
 
 
+def build_online_next_object_annotation_plan_from_demo_spec(spec: DemoReplaySpec) -> OnlineNextObjectAnnotationPlan:
+    """Extract the live eval target sequence from one successful demo."""
+
+    return build_online_next_object_annotation_plan(build_next_object_highlight_plan(spec))
+
+
 def build_grasp_order_from_source_demo(
     source_demo_file: str | Path,
     *,
@@ -1134,6 +1217,22 @@ def build_grasp_order_from_source_demo(
         demo_key=resolved_demo_key,
     )
     return build_grasp_order_from_demo_spec(spec)
+
+
+def build_online_next_object_annotation_plan_from_source_demo(
+    source_demo_file: str | Path,
+    *,
+    demo_key: str | None = None,
+) -> OnlineNextObjectAnnotationPlan:
+    """Extract live eval highlighting and placement-dot targets from one source HDF5 demo."""
+
+    source_demo_path = Path(source_demo_file).expanduser().resolve()
+    resolved_demo_key = demo_key or _first_demo_key(source_demo_path)
+    spec = resolve_demo_replay_spec(
+        source_demo_file=source_demo_path,
+        demo_key=resolved_demo_key,
+    )
+    return build_online_next_object_annotation_plan_from_demo_spec(spec)
 
 
 def render_next_object_highlighted_demo(
