@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 TASK_SUITE="libero_spatial"
-NUM_TRIALS="${NUM_TRIALS:-50}"
+NUM_TRIALS="${NUM_TRIALS:-10}"
 HOST="127.0.0.1"
 PORT="${PORT:-8030}"
 RESIZE_SIZE="224"
@@ -45,7 +45,7 @@ Usage:
 Evaluates the two completed LIBERO Spatial LoRA checkpoints sequentially.
 
 Options:
-  --trials N               rollouts per task (default: 50)
+  --trials N               rollouts per task (default: 10)
   --port PORT              websocket port for the local policy server (default: 8030)
   --server-venv PATH       OpenPI server venv (default: .venv)
   --libero-venv PATH       LIBERO eval venv (default: examples/libero/.venv)
