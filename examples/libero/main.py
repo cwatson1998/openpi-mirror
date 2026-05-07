@@ -2,6 +2,7 @@ import collections
 import dataclasses
 from datetime import datetime
 from datetime import timezone
+import hashlib
 import json
 import logging
 import math
@@ -61,6 +62,7 @@ from libero.libero.envs import OffScreenRenderEnv  # noqa: E402
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 REPLAY_VIDEO_FPS = 10
+_WANDB_MAX_TAG_LENGTH = 64
 
 
 @dataclasses.dataclass
@@ -130,7 +132,14 @@ class Args:
 
 
 def _parse_tags(csv_value: str) -> list[str]:
-    return [tag.strip() for tag in csv_value.split(",") if tag.strip()]
+    tags = []
+    for tag in (tag.strip() for tag in csv_value.split(",") if tag.strip()):
+        parsed_tag = tag
+        if len(tag) > _WANDB_MAX_TAG_LENGTH:
+            tag_hash = hashlib.sha1(tag.encode("utf-8")).hexdigest()[:8]
+            parsed_tag = f"{tag[: _WANDB_MAX_TAG_LENGTH - 9]}_{tag_hash}"
+        tags.append(parsed_tag)
+    return tags
 
 
 def _parse_csv_list(csv_value: str) -> list[str]:
@@ -197,7 +206,16 @@ def _task_metric_prefix(task_id: int) -> str:
     return f"streaming/task_{task_id}"
 
 
-def _define_wandb_metrics(selected_task_ids: list[int]) -> None:
+def _slugify_metric_component(value: str) -> str:
+    slug_chars = [char.lower() if char.isalnum() else "_" for char in value.strip()]
+    return "_".join("".join(slug_chars).split("_"))
+
+
+def _task_named_metric_prefix(task_id: int, task_description: str) -> str:
+    return f"eval/per_task/{task_id:02d}_{_slugify_metric_component(task_description)}"
+
+
+def _define_wandb_metrics(selected_task_ids: list[int], task_descriptions_by_id: dict[int, str]) -> None:
     if wandb.run is None:
         return
 
@@ -242,10 +260,20 @@ def _define_wandb_metrics(selected_task_ids: list[int]) -> None:
         ):
             wandb.define_metric(f"{prefix}/{metric_name}", step_metric=f"{prefix}/episode")
 
+        named_prefix = _task_named_metric_prefix(task_id, task_descriptions_by_id[task_id])
+        for metric_name in (
+            "episode_success",
+            "episodes_completed",
+            "successes",
+            "success_rate_running",
+        ):
+            wandb.define_metric(f"{named_prefix}/{metric_name}", step_metric="eval/episode")
+
 
 def _log_wandb_episode_metrics(
     *,
     task_id: int,
+    task_description: str,
     episode_index: int,
     success: bool,
     steps_taken: int,
@@ -264,6 +292,7 @@ def _log_wandb_episode_metrics(
         return
 
     task_prefix = _task_metric_prefix(task_id)
+    named_task_prefix = _task_named_metric_prefix(task_id, task_description)
     task_success_rate = float(task_successes) / float(task_episodes)
     total_success_rate = float(total_successes) / float(total_episodes)
     wandb.log(
@@ -297,6 +326,10 @@ def _log_wandb_episode_metrics(
             f"{task_prefix}/episodes_completed": task_episodes,
             f"{task_prefix}/successes": task_successes,
             f"{task_prefix}/success_rate_running": task_success_rate,
+            f"{named_task_prefix}/episode_success": float(success),
+            f"{named_task_prefix}/episodes_completed": task_episodes,
+            f"{named_task_prefix}/successes": task_successes,
+            f"{named_task_prefix}/success_rate_running": task_success_rate,
         }
     )
 
@@ -304,6 +337,7 @@ def _log_wandb_episode_metrics(
 def _log_wandb_task_metrics(
     *,
     task_id: int,
+    task_description: str,
     task_episodes: int,
     task_successes: int,
     total_episodes: int,
@@ -313,14 +347,53 @@ def _log_wandb_task_metrics(
     if wandb.run is None:
         return
 
+    named_task_prefix = _task_named_metric_prefix(task_id, task_description)
+    task_success_rate = float(task_successes) / float(task_episodes)
     wandb.log(
         {
             "eval/episode": total_episodes,
             "eval/task_id": task_id,
-            "eval/task_success_rate": float(task_successes) / float(task_episodes),
+            "eval/task_success_rate": task_success_rate,
             "eval/total_success_rate_running": float(total_successes) / float(total_episodes),
             "eval/tasks_completed": tasks_completed,
             "eval/episodes_completed": total_episodes,
+            f"{named_task_prefix}/success_rate_final": task_success_rate,
+        }
+    )
+
+
+def _log_wandb_final_task_summary(task_results: list[dict], *, total_episodes: int) -> None:
+    if wandb.run is None:
+        return
+
+    table = wandb.Table(
+        columns=[
+            "task_id",
+            "task_description",
+            "episodes",
+            "successes",
+            "success_rate",
+        ]
+    )
+    for task_result in task_results:
+        table.add_data(
+            task_result["task_id"],
+            task_result["task_description"],
+            task_result["episodes"],
+            task_result["successes"],
+            task_result["success_rate"],
+        )
+
+    wandb.log(
+        {
+            "eval/episode": total_episodes,
+            "eval/per_task_success_rates_table": table,
+            "eval/per_task_success_rates_bar": wandb.plot.bar(
+                table,
+                "task_description",
+                "success_rate",
+                title="Final per-task success rates",
+            ),
         }
     )
 
@@ -540,7 +613,8 @@ def eval_libero(args: Args) -> None:
     ]
     if not selected_task_ids:
         raise ValueError("No LIBERO evaluation tasks matched the requested task filter.")
-    _define_wandb_metrics(selected_task_ids)
+    task_descriptions_by_id = {task_id: task_suite.get_task(task_id).language for task_id in selected_task_ids}
+    _define_wandb_metrics(selected_task_ids, task_descriptions_by_id)
 
     prompt_overrides: dict[str, str] = {}
     if args.prompt_override_file:
@@ -734,6 +808,7 @@ def eval_libero(args: Args) -> None:
             episode_runtime_s = time.perf_counter() - episode_start_time
             _log_wandb_episode_metrics(
                 task_id=task_id,
+                task_description=task_description,
                 episode_index=episode_idx,
                 success=bool(done),
                 steps_taken=t,
@@ -832,6 +907,7 @@ def eval_libero(args: Args) -> None:
         logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
         _log_wandb_task_metrics(
             task_id=task_id,
+            task_description=task_description,
             task_episodes=task_episodes,
             task_successes=task_successes,
             total_episodes=total_episodes,
@@ -887,8 +963,10 @@ def eval_libero(args: Args) -> None:
         wandb.summary["eval/progress_out_path"] = str(progress_out_path)
         wandb.summary["eval/video_out_path"] = str(video_out_path)
         for task_result in task_results:
-            task_slug = task_result["task_description"].replace(" ", "_")
+            task_slug = _slugify_metric_component(task_result["task_description"])
             wandb.summary[f"eval/task_success_rate/{task_slug}"] = task_result["success_rate"]
+
+        _log_wandb_final_task_summary(task_results, total_episodes=total_episodes)
 
         artifact = wandb.Artifact(f"{wandb.run.id}-libero-eval-results", type="libero-eval-results")
         artifact.add_file(str(results_out_path), name="results.json")

@@ -410,6 +410,8 @@ class TrainConfig:
     log_interval: int = 100
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
+    # Maximum number of recent checkpoints to keep.
+    max_checkpoints_to_keep: int = 1
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
 
@@ -619,6 +621,120 @@ _CONFIGS = [
             action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ).get_freeze_filter(),
         # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_fast_libero_spatial_target_dot_low_mem_finetune",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="ccwatson/libero_spatial_next_object_target_dot_alpha04",
+            assets=AssetsConfig(asset_id="libero_spatial_next_object_target_dot_alpha04"),
+            task_suite_name="libero_spatial",
+            base_config=DataConfig(
+                local_files_only=False,
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_fast_libero_spatial_target_dot_from_libero_low_mem_finetune",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="ccwatson/libero_spatial_next_object_target_dot_alpha04",
+            assets=AssetsConfig(
+                asset_id="libero_spatial_next_object_target_dot_alpha04",
+                assets_dir="./assets/pi0_fast_libero_spatial_target_dot_low_mem_finetune",
+            ),
+            task_suite_name="libero_spatial",
+            base_config=DataConfig(
+                local_files_only=False,
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_libero/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_fast_libero_spatial_low_mem_finetune",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(asset_id="libero_spatial"),
+            task_suite_name="libero_spatial",
+            base_config=DataConfig(
+                local_files_only=False,
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_fast_libero_spatial_from_libero_low_mem_finetune",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                asset_id="libero_spatial",
+                assets_dir="./assets/pi0_fast_libero_spatial_low_mem_finetune",
+            ),
+            task_suite_name="libero_spatial",
+            base_config=DataConfig(
+                local_files_only=False,
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_libero/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
         ema_decay=None,
     ),
     TrainConfig(

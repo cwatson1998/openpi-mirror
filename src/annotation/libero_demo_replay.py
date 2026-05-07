@@ -28,6 +28,7 @@ from collections.abc import Sequence
 import contextlib
 import dataclasses
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -89,6 +90,7 @@ class NextObjectHighlightPlan:
     graspable_obj_of_interest: tuple[str, ...]
     grasped_object_by_timestep: tuple[str | None, ...]
     highlighted_object_by_timestep: tuple[str | None, ...]
+    placement_target_by_timestep: tuple[tuple[float, float, float] | None, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -98,6 +100,10 @@ class NextObjectHighlightRenderResult:
     highlight_rgb: tuple[int, int, int]
     highlight_alpha: float
     highlight_plan: NextObjectHighlightPlan
+    placement_dot_enabled: bool = False
+    placement_dot_rgb: tuple[int, int, int] | None = None
+    placement_dot_alpha: float | None = None
+    placement_dot_radius_px: int | None = None
 
 
 @dataclasses.dataclass
@@ -184,14 +190,7 @@ def _max_abs_diff(left: np.ndarray | None, right: np.ndarray | None) -> float:
     prefix_length = min(left.shape[0], right.shape[0])
     if prefix_length == 0:
         return float("inf")
-    return float(
-        np.max(
-            np.abs(
-                left[:prefix_length].astype(np.float64)
-                - right[:prefix_length].astype(np.float64)
-            )
-        )
-    )
+    return float(np.max(np.abs(left[:prefix_length].astype(np.float64) - right[:prefix_length].astype(np.float64))))
 
 
 def _read_nested_dataset(group: h5py.Group, dataset_path: str) -> np.ndarray | None:
@@ -278,9 +277,7 @@ def match_demo_key(
     # actions alone are not a safe exact-match signal, but a unique same-length
     # proprio match still identifies the source demo deterministically.
     proprio_candidates = [
-        (demo_key, metrics)
-        for demo_key, metrics in candidates
-        if metrics["length_delta"] == 0 and proprio_ok(metrics)
+        (demo_key, metrics) for demo_key, metrics in candidates if metrics["length_delta"] == 0 and proprio_ok(metrics)
     ]
     if len(proprio_candidates) == 1 and proprio_candidates[0][0] == best_demo_key:
         return best_demo_key, best_metrics
@@ -719,6 +716,71 @@ def _parse_rgb_triplet(rgb_value: str | tuple[int, int, int] | list[int]) -> tup
     return tuple(int(channel) for channel in rgb_array)
 
 
+def _validate_alpha(alpha: float) -> None:
+    if not 0.0 <= float(alpha) <= 1.0:
+        raise ValueError("alpha must lie in [0.0, 1.0].")
+
+
+def _project_world_position_to_pixel(
+    env: Any,
+    *,
+    camera_name: str,
+    world_position: tuple[float, float, float],
+    image_height: int,
+    image_width: int,
+) -> tuple[int, int] | None:
+    camera_id = env.sim.model.camera_name2id(camera_name)
+    camera_position = np.asarray(env.sim.data.cam_xpos[camera_id], dtype=np.float64)
+    camera_rotation = np.asarray(env.sim.data.cam_xmat[camera_id], dtype=np.float64).reshape(3, 3)
+    camera_point = camera_rotation.T @ (np.asarray(world_position, dtype=np.float64) - camera_position)
+
+    # MuJoCo camera coordinates look down -Z. Points behind the camera should not
+    # receive a dot.
+    if camera_point[2] >= -1e-6:
+        return None
+
+    focal_length = 0.5 * float(image_height) / math.tan(math.radians(float(env.sim.model.cam_fovy[camera_id])) / 2.0)
+    pixel_x = (float(image_width) / 2.0) + focal_length * (camera_point[0] / -camera_point[2])
+    pixel_y = (float(image_height) / 2.0) + focal_length * (camera_point[1] / -camera_point[2])
+    return int(round(pixel_x)), int(round(pixel_y))
+
+
+def _draw_placement_dot(
+    frame: np.ndarray,
+    *,
+    center_xy: tuple[int, int] | None,
+    dot_rgb: tuple[int, int, int],
+    dot_alpha: float,
+    dot_radius_px: int,
+) -> np.ndarray:
+    if center_xy is None:
+        return frame
+    if dot_radius_px <= 0:
+        raise ValueError("dot_radius_px must be positive.")
+    _validate_alpha(dot_alpha)
+
+    center_x, center_y = center_xy
+    image_height, image_width = frame.shape[:2]
+    x_min = max(0, center_x - dot_radius_px)
+    x_max = min(image_width, center_x + dot_radius_px + 1)
+    y_min = max(0, center_y - dot_radius_px)
+    y_max = min(image_height, center_y + dot_radius_px + 1)
+    if x_min >= x_max or y_min >= y_max:
+        return frame
+
+    output = np.array(frame, copy=True)
+    yy, xx = np.ogrid[y_min:y_max, x_min:x_max]
+    mask = (xx - center_x) ** 2 + (yy - center_y) ** 2 <= dot_radius_px**2
+    if not np.any(mask):
+        return output
+
+    patch = output[y_min:y_max, x_min:x_max]
+    color = np.asarray(dot_rgb, dtype=np.float32)
+    blended = (1.0 - float(dot_alpha)) * patch[mask].astype(np.float32) + float(dot_alpha) * color
+    patch[mask] = np.clip(np.round(blended), 0, 255).astype(np.uint8)
+    return output
+
+
 def _select_grasped_object(
     candidate_names: Sequence[str],
     is_grasped_by_name: dict[str, bool],
@@ -740,6 +802,63 @@ def _backfill_next_highlight_targets(
             next_object = current_object
         highlighted_object_by_timestep[timestep_index] = next_object
     return tuple(highlighted_object_by_timestep)
+
+
+def _object_world_position(env: Any, object_name: str) -> tuple[float, float, float]:
+    body_id = env.env.obj_body_id[object_name]
+    position = np.asarray(env.sim.data.body_xpos[body_id], dtype=np.float64).reshape(-1)
+    if position.shape != (3,):
+        raise ValueError(f"Expected world position for `{object_name}` to be length 3, got {position.shape}.")
+    return (float(position[0]), float(position[1]), float(position[2]))
+
+
+def _compute_placement_targets_by_timestep(
+    *,
+    grasped_object_by_timestep: Sequence[str | None],
+    highlighted_object_by_timestep: Sequence[str | None],
+    object_positions_by_timestep: dict[str, Sequence[tuple[float, float, float]]],
+) -> tuple[tuple[float, float, float] | None, ...]:
+    """Map each active object timestep to the placement target for that object.
+
+    An active-object run can contain brief non-grasped gaps before the object is
+    actually placed, so the target is taken from the first timestep after the
+    last grasp of that object in the run. If the demo ends while the object is
+    still grasped, the final saved position is used.
+    """
+
+    num_timesteps = len(grasped_object_by_timestep)
+    if len(highlighted_object_by_timestep) != num_timesteps:
+        raise ValueError("grasped and highlighted object sequences must have the same length.")
+
+    placement_target_by_timestep: list[tuple[float, float, float] | None] = [None] * num_timesteps
+    timestep_index = 0
+    while timestep_index < num_timesteps:
+        object_name = highlighted_object_by_timestep[timestep_index]
+        if object_name is None:
+            timestep_index += 1
+            continue
+
+        run_start = timestep_index
+        while timestep_index + 1 < num_timesteps and highlighted_object_by_timestep[timestep_index + 1] == object_name:
+            timestep_index += 1
+        run_end = timestep_index
+
+        object_positions = object_positions_by_timestep.get(object_name, ())
+        target_position = None
+        if object_positions:
+            grasp_indices = [
+                index for index in range(run_start, run_end + 1) if grasped_object_by_timestep[index] == object_name
+            ]
+            last_grasp_index = grasp_indices[-1] if grasp_indices else run_end
+            release_index = last_grasp_index + 1 if last_grasp_index + 1 < num_timesteps else num_timesteps - 1
+            target_position = object_positions[release_index]
+
+        for active_timestep_index in range(run_start, run_end + 1):
+            placement_target_by_timestep[active_timestep_index] = target_position
+
+        timestep_index += 1
+
+    return tuple(placement_target_by_timestep)
 
 
 def build_grasp_sequence(
@@ -814,9 +933,7 @@ def _normalize_state_indices(
         if normalized_index < 0:
             normalized_index += num_states
         if normalized_index < 0 or normalized_index >= num_states:
-            raise IndexError(
-                f"Timestep index {timestep_index} is out of range for {num_states} saved states."
-            )
+            raise IndexError(f"Timestep index {timestep_index} is out of range for {num_states} saved states.")
         normalized_indices.append(normalized_index)
     return normalized_indices
 
@@ -874,9 +991,7 @@ def render_demo_timestep_indices(
             observation_key = f"{camera_name}_image"
             if observation_key not in observation:
                 available = sorted(key for key in observation if key.endswith("_image"))
-                raise KeyError(
-                    f"Camera `{camera_name}` not found in observations. Available image keys: {available}"
-                )
+                raise KeyError(f"Camera `{camera_name}` not found in observations. Available image keys: {available}")
 
             frame = np.asarray(observation[observation_key], dtype=np.uint8)
             frames.append(frame)
@@ -965,6 +1080,9 @@ def build_next_object_highlight_plan(spec: DemoReplaySpec) -> NextObjectHighligh
             graspable_obj_of_interest.append(object_name)
 
         grasped_object_by_timestep: list[str | None] = []
+        object_positions_by_timestep: dict[str, list[tuple[float, float, float]]] = {
+            object_name: [] for object_name in graspable_obj_of_interest
+        }
         for state in spec.states:
             env.set_init_state(state)
             # Preserve the BDDL ordering when choosing among candidate objects so
@@ -973,17 +1091,23 @@ def build_next_object_highlight_plan(spec: DemoReplaySpec) -> NextObjectHighligh
                 object_name: bool(env.env.object_states_dict[object_name].is_grasped())
                 for object_name in graspable_obj_of_interest
             }
-            grasped_object_by_timestep.append(
-                _select_grasped_object(graspable_obj_of_interest, is_grasped_by_name)
-            )
+            grasped_object_by_timestep.append(_select_grasped_object(graspable_obj_of_interest, is_grasped_by_name))
+            for object_name in graspable_obj_of_interest:
+                object_positions_by_timestep[object_name].append(_object_world_position(env, object_name))
     finally:
         env.close()
 
+    highlighted_object_by_timestep = _backfill_next_highlight_targets(grasped_object_by_timestep)
     return NextObjectHighlightPlan(
         obj_of_interest=obj_of_interest,
         graspable_obj_of_interest=tuple(graspable_obj_of_interest),
         grasped_object_by_timestep=tuple(grasped_object_by_timestep),
-        highlighted_object_by_timestep=_backfill_next_highlight_targets(grasped_object_by_timestep),
+        highlighted_object_by_timestep=highlighted_object_by_timestep,
+        placement_target_by_timestep=_compute_placement_targets_by_timestep(
+            grasped_object_by_timestep=grasped_object_by_timestep,
+            highlighted_object_by_timestep=highlighted_object_by_timestep,
+            object_positions_by_timestep=object_positions_by_timestep,
+        ),
     )
 
 
@@ -1018,8 +1142,13 @@ def render_next_object_highlighted_demo(
     camera_names: Sequence[str] = ("agentview", "robot0_eye_in_hand"),
     camera_height: int = 256,
     camera_width: int = 256,
+    timestep_indices: Sequence[int] | None = None,
     highlight_rgb: tuple[int, int, int] | list[int] | str = (255, 105, 180),
     highlight_alpha: float = 1.0,
+    placement_dot: bool = False,
+    placement_dot_rgb: tuple[int, int, int] | list[int] | str = (0, 96, 255),
+    placement_dot_alpha: float = 1.0,
+    placement_dot_radius_px: int = 5,
 ) -> NextObjectHighlightRenderResult:
     """Re-render a demo with the next future grasp target highlighted in RGB.
 
@@ -1027,6 +1156,11 @@ def render_next_object_highlighted_demo(
     OpenPI image keys, but replaces the stored RGB stream with fresh simulator
     renders whose mask target changes over time based on the next future grasp of
     a BDDL `obj_of_interest` object.
+
+    If `placement_dot` is enabled, a small blue dot is drawn at the active
+    object's placement target projected into each camera. The target is the first
+    saved object position after the grasp segment releases, or the final saved
+    object position if the object remains grasped through the end of the demo.
     """
 
     camera_names = tuple(camera_names)
@@ -1035,8 +1169,21 @@ def render_next_object_highlighted_demo(
 
     highlight_plan = build_next_object_highlight_plan(spec)
     highlight_rgb_triplet = _parse_rgb_triplet(highlight_rgb)
+    placement_dot_rgb_triplet = _parse_rgb_triplet(placement_dot_rgb) if placement_dot else (0, 96, 255)
+    if placement_dot:
+        _validate_alpha(float(placement_dot_alpha))
+        if placement_dot_radius_px <= 0:
+            raise ValueError("placement_dot_radius_px must be positive.")
+    normalized_indices = (
+        list(range(int(spec.states.shape[0])))
+        if timestep_indices is None
+        else _normalize_state_indices(timestep_indices, num_states=int(spec.states.shape[0]))
+    )
+    if not normalized_indices:
+        raise ValueError("Provide at least one timestep index to render.")
 
     _, masked_segmentation_env_cls, libero_postprocess_model_xml = _load_libero_modules()
+    model_xml = _postprocess_demo_model_xml(spec.model_xml, libero_postprocess_model_xml)
     env = masked_segmentation_env_cls(
         bddl_file_name=spec.bddl_file_name,
         camera_names=list(camera_names),
@@ -1046,19 +1193,19 @@ def render_next_object_highlighted_demo(
 
     try:
         env.reset()
-        env.reset_from_xml_string(_postprocess_demo_model_xml(spec.model_xml, libero_postprocess_model_xml))
+        env.reset_from_xml_string(model_xml)
         env.sim.reset()
 
         frames_by_camera = {camera_name: [] for camera_name in camera_names}
-        for timestep_index, state in enumerate(spec.states):
+        for timestep_index in normalized_indices:
+            state = spec.states[timestep_index]
             highlighted_object = highlight_plan.highlighted_object_by_timestep[timestep_index]
             if highlighted_object is None:
                 env.clear_instance_mask()
             else:
                 if highlighted_object not in env.instance_to_id:
                     raise KeyError(
-                        "The highlighted object is not present in the segmentation mapping: "
-                        f"{highlighted_object}"
+                        "The highlighted object is not present in the segmentation mapping: " f"{highlighted_object}"
                     )
                 env.set_instance_mask(
                     highlighted_object,
@@ -1068,6 +1215,7 @@ def render_next_object_highlighted_demo(
                 )
 
             observations = env.set_init_state(state)
+            placement_target = highlight_plan.placement_target_by_timestep[timestep_index]
             for camera_name in camera_names:
                 observation_key = f"{camera_name}_image"
                 if observation_key not in observations:
@@ -1075,7 +1223,24 @@ def render_next_object_highlighted_demo(
                     raise KeyError(
                         f"Camera `{camera_name}` not found in observations. Available image keys: {available}"
                     )
-                frames_by_camera[camera_name].append(np.asarray(observations[observation_key], dtype=np.uint8))
+                frame = np.asarray(observations[observation_key], dtype=np.uint8)
+                if placement_dot:
+                    frame = _draw_placement_dot(
+                        frame,
+                        center_xy=_project_world_position_to_pixel(
+                            env,
+                            camera_name=camera_name,
+                            world_position=placement_target,
+                            image_height=int(camera_height),
+                            image_width=int(camera_width),
+                        )
+                        if placement_target is not None
+                        else None,
+                        dot_rgb=placement_dot_rgb_triplet,
+                        dot_alpha=float(placement_dot_alpha),
+                        dot_radius_px=int(placement_dot_radius_px),
+                    )
+                frames_by_camera[camera_name].append(frame)
     finally:
         env.close()
 
@@ -1085,6 +1250,10 @@ def render_next_object_highlighted_demo(
         highlight_rgb=highlight_rgb_triplet,
         highlight_alpha=float(highlight_alpha),
         highlight_plan=highlight_plan,
+        placement_dot_enabled=bool(placement_dot),
+        placement_dot_rgb=placement_dot_rgb_triplet if placement_dot else None,
+        placement_dot_alpha=float(placement_dot_alpha) if placement_dot else None,
+        placement_dot_radius_px=int(placement_dot_radius_px) if placement_dot else None,
     )
 
 
@@ -1235,7 +1404,9 @@ def write_frame_sequence(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render a stored LIBERO demonstration by replaying saved MuJoCo states.")
+    parser = argparse.ArgumentParser(
+        description="Render a stored LIBERO demonstration by replaying saved MuJoCo states."
+    )
     parser.add_argument("--dataset-name", default="libero_spatial_no_noops")
     parser.add_argument("--data-dir", default="data/libero/raw")
     parser.add_argument("--episode-index", type=int)
@@ -1251,6 +1422,13 @@ def main() -> None:
     parser.add_argument("--mask-rgb", default="0,0,0")
     parser.add_argument("--mask-alpha", type=float, default=1.0)
     parser.add_argument("--mask-camera-name", action="append", default=[])
+    parser.add_argument("--next-object-highlighting", action="store_true")
+    parser.add_argument("--next-object-highlight-rgb", default="255,105,180")
+    parser.add_argument("--next-object-highlight-alpha", type=float, default=1.0)
+    parser.add_argument("--next-object-placement-dot", action="store_true")
+    parser.add_argument("--placement-dot-rgb", default="0,96,255")
+    parser.add_argument("--placement-dot-alpha", type=float, default=1.0)
+    parser.add_argument("--placement-dot-radius-px", type=int, default=5)
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--output-dir", default="outputs/libero_demo_replay")
     parser.add_argument("--video-path")
@@ -1267,31 +1445,93 @@ def main() -> None:
         demo_key=args.demo_key,
         demo_search_roots=args.demo_search_root,
     )
-    render_result = render_demo(
-        spec,
-        camera_name=args.camera_name,
-        camera_height=args.camera_height,
-        camera_width=args.camera_width,
-        frame_stride=args.frame_stride,
-        max_frames=args.max_frames,
-        masked_instance_names=args.masked_instance,
-        mask_rgb=args.mask_rgb,
-        mask_alpha=args.mask_alpha,
-        mask_camera_names=args.mask_camera_name,
-    )
-    manifest = _build_manifest(
-        spec,
-        render_result,
-        dataset_name=args.dataset_name if args.source_demo_file is None else None,
-        data_dir=args.data_dir if args.source_demo_file is None else None,
-        episode_index=args.episode_index,
-        frame_stride=args.frame_stride,
-        max_frames=args.max_frames,
-        masked_instance_names=args.masked_instance,
-        mask_rgb=args.mask_rgb,
-        mask_alpha=args.mask_alpha,
-        mask_camera_names=args.mask_camera_name,
-    )
+    if args.next_object_placement_dot and not args.next_object_highlighting:
+        parser.error("`--next-object-placement-dot` requires `--next-object-highlighting`.")
+    if args.next_object_highlighting and args.masked_instance:
+        parser.error("Use either `--masked-instance` or `--next-object-highlighting`, not both.")
+
+    if args.next_object_highlighting:
+        recorded_frames = _recorded_frames_for_camera(spec, args.camera_name)
+        camera_height = args.camera_height or (int(recorded_frames.shape[1]) if recorded_frames is not None else 256)
+        camera_width = args.camera_width or (int(recorded_frames.shape[2]) if recorded_frames is not None else 256)
+        timestep_indices = list(range(0, int(spec.states.shape[0]), args.frame_stride))
+        if args.max_frames is not None:
+            timestep_indices = timestep_indices[: args.max_frames]
+
+        highlighted_render = render_next_object_highlighted_demo(
+            spec,
+            camera_names=[args.camera_name],
+            camera_height=camera_height,
+            camera_width=camera_width,
+            timestep_indices=timestep_indices,
+            highlight_rgb=args.next_object_highlight_rgb,
+            highlight_alpha=args.next_object_highlight_alpha,
+            placement_dot=args.next_object_placement_dot,
+            placement_dot_rgb=args.placement_dot_rgb,
+            placement_dot_alpha=args.placement_dot_alpha,
+            placement_dot_radius_px=args.placement_dot_radius_px,
+        )
+        render_result = RenderResult(
+            frames=highlighted_render.frames_by_camera[args.camera_name],
+            camera_name=args.camera_name,
+        )
+        manifest = {
+            "dataset_name": args.dataset_name if args.source_demo_file is None else None,
+            "data_dir": args.data_dir if args.source_demo_file is None else None,
+            "episode_index": args.episode_index,
+            "task_instruction": spec.task_instruction,
+            "source_demo_hdf5": str(spec.demo_hdf5_path),
+            "source_demo_path_hint": spec.source_demo_path_hint,
+            "demo_key": spec.demo_key,
+            "bddl_file_name": spec.bddl_file_name,
+            "num_states": int(spec.states.shape[0]),
+            "num_rendered_frames": int(render_result.frames.shape[0]),
+            "render_source": "simulator_state_replay",
+            "render_frame_shape": list(render_result.frames.shape[1:]),
+            "camera_name": render_result.camera_name,
+            "frame_stride": args.frame_stride,
+            "max_frames": args.max_frames,
+            "next_object_highlighting": {
+                "highlight_rgb": list(highlighted_render.highlight_rgb),
+                "highlight_alpha": highlighted_render.highlight_alpha,
+                "placement_dot": {
+                    "enabled": highlighted_render.placement_dot_enabled,
+                    "rgb": None
+                    if highlighted_render.placement_dot_rgb is None
+                    else list(highlighted_render.placement_dot_rgb),
+                    "alpha": highlighted_render.placement_dot_alpha,
+                    "radius_px": highlighted_render.placement_dot_radius_px,
+                },
+            },
+        }
+        if spec.matching_summary is not None:
+            manifest["matching_summary"] = spec.matching_summary
+    else:
+        render_result = render_demo(
+            spec,
+            camera_name=args.camera_name,
+            camera_height=args.camera_height,
+            camera_width=args.camera_width,
+            frame_stride=args.frame_stride,
+            max_frames=args.max_frames,
+            masked_instance_names=args.masked_instance,
+            mask_rgb=args.mask_rgb,
+            mask_alpha=args.mask_alpha,
+            mask_camera_names=args.mask_camera_name,
+        )
+        manifest = _build_manifest(
+            spec,
+            render_result,
+            dataset_name=args.dataset_name if args.source_demo_file is None else None,
+            data_dir=args.data_dir if args.source_demo_file is None else None,
+            episode_index=args.episode_index,
+            frame_stride=args.frame_stride,
+            max_frames=args.max_frames,
+            masked_instance_names=args.masked_instance,
+            mask_rgb=args.mask_rgb,
+            mask_alpha=args.mask_alpha,
+            mask_camera_names=args.mask_camera_name,
+        )
     write_render_outputs(
         render_result,
         output_dir=args.output_dir,

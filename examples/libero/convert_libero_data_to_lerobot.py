@@ -105,6 +105,10 @@ def _render_next_object_highlighted_frames(
     demo_search_roots: Sequence[str],
     highlight_rgb: str,
     highlight_alpha: float,
+    next_object_placement_dot: bool,
+    placement_dot_rgb: str,
+    placement_dot_alpha: float,
+    placement_dot_radius_px: int,
 ) -> dict[str, np.ndarray]:
     episode = _build_rlds_episode(
         dataset_name=dataset_name,
@@ -123,9 +127,9 @@ def _render_next_object_highlighted_frames(
         state_tolerance=1.2,
     )
 
-    if len(steps) != int(spec.states.shape[0]):
+    if len(steps) > int(spec.states.shape[0]):
         raise ValueError(
-            "The resolved source demo length does not match the RLDS episode length. "
+            "The resolved source demo is shorter than the RLDS episode. "
             f"Episode {episode_index} in {dataset_name} has {len(steps)} steps, but the matched demo "
             f"{spec.demo_hdf5_path}:{spec.demo_key} has {int(spec.states.shape[0])} saved states."
         )
@@ -137,8 +141,13 @@ def _render_next_object_highlighted_frames(
         camera_names=[_RLDS_TO_SIM_CAMERA_NAMES["image"], _RLDS_TO_SIM_CAMERA_NAMES["wrist_image"]],
         camera_height=camera_height,
         camera_width=camera_width,
+        timestep_indices=range(len(steps)),
         highlight_rgb=highlight_rgb,
         highlight_alpha=highlight_alpha,
+        placement_dot=next_object_placement_dot,
+        placement_dot_rgb=placement_dot_rgb,
+        placement_dot_alpha=placement_dot_alpha,
+        placement_dot_radius_px=placement_dot_radius_px,
     )
     return {
         "image": render_result.frames_by_camera[_RLDS_TO_SIM_CAMERA_NAMES["image"]],
@@ -160,6 +169,10 @@ def main(
     next_object_highlighting: bool = False,
     highlight_rgb: str = "255,105,180",
     highlight_alpha: float = 1.0,
+    next_object_placement_dot: bool = False,
+    placement_dot_rgb: str = "0,96,255",
+    placement_dot_alpha: float = 1.0,
+    placement_dot_radius_px: int = 5,
     demo_search_roots: Sequence[str] = (),
     push_to_hub: bool = False,
 ):
@@ -172,6 +185,8 @@ def main(
         task_split_file=task_split_file,
         task_split=task_split,
     )
+    if next_object_placement_dot and not next_object_highlighting:
+        raise ValueError("`next_object_placement_dot` requires `next_object_highlighting`.")
     selected_task_set = {task.casefold() for task in selected_tasks}
 
     if download:
@@ -238,6 +253,10 @@ def main(
                     demo_search_roots=demo_search_roots,
                     highlight_rgb=highlight_rgb,
                     highlight_alpha=highlight_alpha,
+                    next_object_placement_dot=next_object_placement_dot,
+                    placement_dot_rgb=placement_dot_rgb,
+                    placement_dot_alpha=placement_dot_alpha,
+                    placement_dot_radius_px=placement_dot_radius_px,
                 )
 
             for step_index, step in enumerate(steps):
@@ -277,6 +296,17 @@ def main(
                 "enabled": True,
                 "highlight_rgb": [int(channel) for channel in highlight_rgb.split(",")],
                 "highlight_alpha": float(highlight_alpha),
+                "placement_dot": {
+                    "enabled": bool(next_object_placement_dot),
+                    "rgb": [int(channel) for channel in placement_dot_rgb.split(",")],
+                    "alpha": float(placement_dot_alpha),
+                    "radius_px": int(placement_dot_radius_px),
+                    "target_rule": (
+                        "For the currently highlighted object, project a dot at the first saved "
+                        "object body position after the grasp segment releases. If the object is "
+                        "never released, use its final saved position."
+                    ),
+                },
                 "demo_search_roots": list(demo_search_roots),
                 "requires_source_hdf5": True,
                 "selection_rule": (

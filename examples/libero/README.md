@@ -203,6 +203,7 @@ PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
   --repo_name local/libero_spatial_next_object \
   --suite_names libero_spatial \
   --next-object-highlighting \
+  --next-object-placement-dot \
   --highlight-rgb 255,105,180 \
   --demo-search-roots third_party/libero/libero/datasets
 ```
@@ -211,6 +212,9 @@ Notes:
 
 - the default highlight color is pink: `255,105,180`
 - `--highlight-alpha` controls blending strength
+- `--next-object-placement-dot` adds a blue projected dot at the active
+  object's placement target, using the object's body position after release or
+  its final body position if it is never released
 - this transform requires the original LIBERO source HDF5 demos, not just the
   RLDS shards, because the replay uses saved MuJoCo `states`
 - in practice, full-suite conversion also relies on tolerant RLDS-to-HDF5

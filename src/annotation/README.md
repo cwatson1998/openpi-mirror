@@ -129,7 +129,7 @@ The main code is in `annotation.libero_demo_replay`:
 - `build_next_object_highlight_plan(...)`: compute which object should be
   highlighted at each saved timestep
 - `render_next_object_highlighted_demo(...)`: re-render the RGB cameras with the
-  per-timestep highlight applied
+  per-timestep highlight applied, optionally with a blue placement-target dot
 
 The current dataset-creation entrypoint is:
 
@@ -147,6 +147,7 @@ PYTHONPATH=src:third_party/libero examples/libero/.venv/bin/python \
   --repo_name local/libero_spatial_next_object \
   --suite_names libero_spatial \
   --next-object-highlighting \
+  --next-object-placement-dot \
   --highlight-rgb 255,105,180 \
   --demo-search-roots third_party/libero/libero/datasets
 ```
@@ -155,6 +156,9 @@ Important details:
 
 - the default highlight color is pink: `255,105,180`
 - `--highlight-alpha` controls blending strength
+- `--next-object-placement-dot` adds a blue projected dot at the active object's
+  placement target; the first version uses the object's body position after
+  release, or its final body position if it is never released
 - the converter keeps the standard LeRobot keys:
   `image`, `wrist_image`, `state`, `actions`
 - this means the existing OpenPI training pipeline can train on the new dataset

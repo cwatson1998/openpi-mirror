@@ -1,7 +1,8 @@
 """Create PDF summaries of LIBERO benchmark tasks.
 
-Each page shows the BDDL ``:language`` prompt plus the first and last RGB
-frames from a successful source HDF5 demonstration.
+Each page shows the BDDL ``:language`` prompt plus either:
+- the first and last RGB frames from a successful source HDF5 demonstration, or
+- a simulator-rendered initial RGB observation when ``--simulator-initial-frame`` is set.
 
 Example:
     PYTHONPATH=src .venv/bin/python -m annotation.libero_benchmark_task_pdf \
@@ -28,6 +29,7 @@ import numpy as np
 
 DEFAULT_BDDL_ROOT = Path("third_party/libero/libero/libero/bddl_files")
 DEFAULT_DEMO_ROOT = Path("third_party/libero/libero/datasets")
+DEFAULT_INIT_STATE_ROOT = Path("third_party/libero/libero/libero/init_files")
 DEFAULT_OUTPUT_DIR = Path("outputs/libero_benchmark_task_pdfs")
 DEFAULT_BENCHMARKS = (
     "libero_spatial",
@@ -58,7 +60,7 @@ class TaskSnapshot:
     camera_dataset: str
     source_kind: str
     initial_frame: np.ndarray
-    final_frame: np.ndarray
+    final_frame: np.ndarray | None
 
 
 def _repo_root() -> Path:
@@ -262,11 +264,104 @@ def _load_rlds_task_snapshots(
     return snapshots
 
 
+def _load_init_states(init_state_path: Path) -> np.ndarray:
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Simulator initial-frame mode requires torch to load LIBERO .pruned_init files."
+        ) from exc
+
+    states = torch.load(str(init_state_path), map_location="cpu")
+    if hasattr(states, "detach"):
+        states = states.detach().cpu().numpy()
+    return np.asarray(states)
+
+
+def _resolve_init_state_path(benchmark: str, task_name: str, init_state_root: Path) -> Path:
+    benchmark_dir = init_state_root / benchmark
+    candidates = [
+        benchmark_dir / f"{task_name}.pruned_init",
+        benchmark_dir / f"{task_name}.init",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    checked = "\n".join(f"  - {candidate}" for candidate in candidates)
+    raise FileNotFoundError(f"Init states not found for {benchmark}/{task_name}. Checked:\n{checked}")
+
+
+def _load_simulator_initial_snapshot(
+    *,
+    benchmark: str,
+    task_index: int,
+    bddl_path: Path,
+    init_state_root: Path,
+    camera_name: str,
+    camera_resolution: int,
+    init_state_index: int,
+) -> TaskSnapshot:
+    from libero.libero.envs import OffScreenRenderEnv
+
+    task_name = bddl_path.stem
+    init_state_path = _resolve_init_state_path(benchmark, task_name, init_state_root)
+    init_states = _load_init_states(init_state_path)
+    if init_states.ndim == 1:
+        selected_state = init_states
+        frame_count = 1
+    else:
+        if not 0 <= init_state_index < int(init_states.shape[0]):
+            raise IndexError(
+                f"Init state index {init_state_index} is out of range for {init_state_path} "
+                f"with {init_states.shape[0]} states."
+            )
+        selected_state = init_states[init_state_index]
+        frame_count = int(init_states.shape[0])
+
+    env = OffScreenRenderEnv(
+        bddl_file_name=str(bddl_path),
+        camera_heights=int(camera_resolution),
+        camera_widths=int(camera_resolution),
+        has_renderer=False,
+        has_offscreen_renderer=True,
+        ignore_done=True,
+        use_camera_obs=True,
+        camera_names=[camera_name],
+    )
+    try:
+        env.reset()
+        observation = env.set_init_state(selected_state)
+        observation_key = f"{camera_name}_image"
+        if observation_key not in observation:
+            raise KeyError(f"Simulator observation does not contain `{observation_key}`.")
+        initial_frame = np.asarray(observation[observation_key], dtype=np.uint8)
+    finally:
+        env.close()
+
+    return TaskSnapshot(
+        index=task_index,
+        benchmark=benchmark,
+        task_name=task_name,
+        language=_extract_language(bddl_path),
+        bddl_path=bddl_path,
+        demo_path=init_state_path,
+        demo_key=f"init_state_{init_state_index}",
+        frame_count=frame_count,
+        camera_dataset=f"{camera_name}_image",
+        source_kind="simulator",
+        initial_frame=initial_frame,
+        final_frame=None,
+    )
+
+
 def _draw_snapshot_page(pdf: PdfPages, snapshot: TaskSnapshot, *, page_size: tuple[float, float]) -> None:
     figure = plt.figure(figsize=page_size)
+    has_final_frame = snapshot.final_frame is not None
+    column_count = 2 if has_final_frame else 1
     grid = figure.add_gridspec(
         3,
-        2,
+        column_count,
         height_ratios=[0.55, 0.12, 1.0],
         hspace=0.12,
         wspace=0.08,
@@ -285,15 +380,17 @@ def _draw_snapshot_page(pdf: PdfPages, snapshot: TaskSnapshot, *, page_size: tup
     source = f"{snapshot.source_kind}: {snapshot.demo_path.name} / {snapshot.demo_key} / {snapshot.camera_dataset}"
     text_axis.text(0.0, 0.06, source, va="bottom", ha="left", fontsize=8, color="#555555")
 
-    initial_label_axis = figure.add_subplot(grid[1, 0])
-    final_label_axis = figure.add_subplot(grid[1, 1])
-    for axis, label in ((initial_label_axis, "Initial observation"), (final_label_axis, "Final observation")):
+    label_axes = [(figure.add_subplot(grid[1, 0]), "Initial observation")]
+    if has_final_frame:
+        label_axes.append((figure.add_subplot(grid[1, 1]), "Final observation"))
+    for axis, label in label_axes:
         axis.axis("off")
         axis.text(0.5, 0.5, label, va="center", ha="center", fontsize=12, weight="bold")
 
-    initial_axis = figure.add_subplot(grid[2, 0])
-    final_axis = figure.add_subplot(grid[2, 1])
-    for axis, frame in ((initial_axis, snapshot.initial_frame), (final_axis, snapshot.final_frame)):
+    frame_axes = [(figure.add_subplot(grid[2, 0]), snapshot.initial_frame)]
+    if has_final_frame:
+        frame_axes.append((figure.add_subplot(grid[2, 1]), snapshot.final_frame))
+    for axis, frame in frame_axes:
         axis.imshow(frame)
         axis.set_xticks([])
         axis.set_yticks([])
@@ -349,6 +446,11 @@ def create_benchmark_pdf(
     output_dir: Path,
     camera: str,
     demo_key: str | None,
+    init_state_root: Path,
+    simulator_initial_frame: bool,
+    simulator_camera: str,
+    simulator_camera_resolution: int,
+    simulator_init_state_index: int,
     rlds_data_dir: Path,
     rlds_camera: str,
     rlds_fallback: bool,
@@ -361,7 +463,7 @@ def create_benchmark_pdf(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{benchmark}_tasks.pdf"
 
-    if download_missing and not (demo_root / benchmark).exists():
+    if download_missing and not simulator_initial_frame and not (demo_root / benchmark).exists():
         _download_missing_benchmark(benchmark, demo_root)
 
     snapshots: list[TaskSnapshot] = []
@@ -369,18 +471,31 @@ def create_benchmark_pdf(
     rlds_snapshots: dict[str, TaskSnapshot] | None = None
     for index, bddl_path in enumerate(bddl_paths, start=1):
         try:
-            snapshots.append(
-                _load_task_snapshot(
-                    benchmark=benchmark,
-                    task_index=index,
-                    bddl_path=bddl_path,
-                    demo_root=demo_root,
-                    camera_dataset=camera_dataset,
-                    requested_demo_key=demo_key,
+            if simulator_initial_frame:
+                snapshots.append(
+                    _load_simulator_initial_snapshot(
+                        benchmark=benchmark,
+                        task_index=index,
+                        bddl_path=bddl_path,
+                        init_state_root=init_state_root,
+                        camera_name=simulator_camera,
+                        camera_resolution=simulator_camera_resolution,
+                        init_state_index=simulator_init_state_index,
+                    )
                 )
-            )
+            else:
+                snapshots.append(
+                    _load_task_snapshot(
+                        benchmark=benchmark,
+                        task_index=index,
+                        bddl_path=bddl_path,
+                        demo_root=demo_root,
+                        camera_dataset=camera_dataset,
+                        requested_demo_key=demo_key,
+                    )
+                )
         except Exception as exc:
-            if rlds_fallback:
+            if rlds_fallback and not simulator_initial_frame:
                 if rlds_snapshots is None:
                     rlds_snapshots = _load_rlds_task_snapshots(
                         benchmark=benchmark,
@@ -422,6 +537,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--bddl-root", default=str(DEFAULT_BDDL_ROOT))
     parser.add_argument("--demo-root", default=str(DEFAULT_DEMO_ROOT))
+    parser.add_argument("--init-state-root", default=str(DEFAULT_INIT_STATE_ROOT))
     parser.add_argument("--rlds-data-dir", default="data/libero/raw")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--camera", default="agentview", help="Camera alias or HDF5 path, e.g. agentview.")
@@ -432,6 +548,14 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not use local RLDS RGB observations when official HDF5 demos are missing.",
     )
+    parser.add_argument(
+        "--simulator-initial-frame",
+        action="store_true",
+        help="Render only the initial observation with LIBERO instead of reading demos or RLDS episodes.",
+    )
+    parser.add_argument("--simulator-camera", default="agentview")
+    parser.add_argument("--simulator-camera-resolution", type=int, default=256)
+    parser.add_argument("--simulator-init-state-index", type=int, default=0)
     parser.add_argument("--download-missing", action="store_true", help="Download missing official LIBERO HDF5 demos.")
     parser.add_argument("--skip-missing", action="store_true", help="Skip tasks with missing demos/frames.")
     parser.add_argument(
@@ -450,6 +574,7 @@ def main() -> None:
 
     bddl_root = _resolve_repo_path(args.bddl_root)
     demo_root = _resolve_repo_path(args.demo_root)
+    init_state_root = _resolve_repo_path(args.init_state_root)
     rlds_data_dir = _resolve_repo_path(args.rlds_data_dir)
     output_dir = _resolve_repo_path(args.output_dir)
 
@@ -461,6 +586,11 @@ def main() -> None:
             output_dir=output_dir,
             camera=args.camera,
             demo_key=args.demo_key,
+            init_state_root=init_state_root,
+            simulator_initial_frame=args.simulator_initial_frame,
+            simulator_camera=args.simulator_camera,
+            simulator_camera_resolution=args.simulator_camera_resolution,
+            simulator_init_state_index=args.simulator_init_state_index,
             rlds_data_dir=rlds_data_dir,
             rlds_camera=args.rlds_camera,
             rlds_fallback=not args.no_rlds_fallback,

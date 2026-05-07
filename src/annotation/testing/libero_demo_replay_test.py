@@ -8,6 +8,7 @@ import numpy as np
 from annotation.libero_demo_replay import OnlineNextObjectHighlightTracker
 from annotation.libero_demo_replay import RldsEpisode
 from annotation.libero_demo_replay import _backfill_next_highlight_targets
+from annotation.libero_demo_replay import _compute_placement_targets_by_timestep
 from annotation.libero_demo_replay import _parse_rgb_triplet
 from annotation.libero_demo_replay import _select_grasped_object
 from annotation.libero_demo_replay import build_grasp_sequence
@@ -31,7 +32,9 @@ def _write_demo(
     demo_group = data_group.create_group(demo_key)
     demo_group.attrs["model_file"] = "<mujoco/>"
     demo_group.create_dataset("actions", data=actions)
-    demo_group.create_dataset("states", data=np.arange(actions.shape[0] * 4, dtype=np.float32).reshape(actions.shape[0], 4))
+    demo_group.create_dataset(
+        "states", data=np.arange(actions.shape[0] * 4, dtype=np.float32).reshape(actions.shape[0], 4)
+    )
 
     obs_group = demo_group.create_group("obs")
     obs_group.create_dataset("joint_states", data=joint_states)
@@ -296,9 +299,7 @@ def test_select_grasped_object_uses_candidate_priority_order() -> None:
 
 
 def test_backfill_next_highlight_targets_uses_current_or_next_grasp() -> None:
-    highlighted = _backfill_next_highlight_targets(
-        [None, None, "akita_black_bowl_1", None, "plate_1", None]
-    )
+    highlighted = _backfill_next_highlight_targets([None, None, "akita_black_bowl_1", None, "plate_1", None])
 
     assert highlighted == (
         "akita_black_bowl_1",
@@ -306,6 +307,66 @@ def test_backfill_next_highlight_targets_uses_current_or_next_grasp() -> None:
         "akita_black_bowl_1",
         "plate_1",
         "plate_1",
+        None,
+    )
+
+
+def test_compute_placement_targets_uses_release_or_final_position() -> None:
+    grasped = [None, "akita_black_bowl_1", "akita_black_bowl_1", None, "plate_1", "plate_1"]
+    targets = _compute_placement_targets_by_timestep(
+        grasped_object_by_timestep=grasped,
+        highlighted_object_by_timestep=_backfill_next_highlight_targets(grasped),
+        object_positions_by_timestep={
+            "akita_black_bowl_1": [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (3.0, 0.0, 0.0),
+                (4.0, 0.0, 0.0),
+                (5.0, 0.0, 0.0),
+            ],
+            "plate_1": [
+                (0.0, 0.0, 1.0),
+                (0.0, 0.0, 2.0),
+                (0.0, 0.0, 3.0),
+                (0.0, 0.0, 4.0),
+                (0.0, 0.0, 5.0),
+                (0.0, 0.0, 6.0),
+            ],
+        },
+    )
+
+    assert targets == (
+        (3.0, 0.0, 0.0),
+        (3.0, 0.0, 0.0),
+        (3.0, 0.0, 0.0),
+        (0.0, 0.0, 6.0),
+        (0.0, 0.0, 6.0),
+        (0.0, 0.0, 6.0),
+    )
+
+
+def test_compute_placement_targets_uses_last_grasp_in_active_run() -> None:
+    grasped = [None, "akita_black_bowl_1", None, "akita_black_bowl_1", None]
+    targets = _compute_placement_targets_by_timestep(
+        grasped_object_by_timestep=grasped,
+        highlighted_object_by_timestep=_backfill_next_highlight_targets(grasped),
+        object_positions_by_timestep={
+            "akita_black_bowl_1": [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (3.0, 0.0, 0.0),
+                (4.0, 0.0, 0.0),
+            ],
+        },
+    )
+
+    assert targets == (
+        (4.0, 0.0, 0.0),
+        (4.0, 0.0, 0.0),
+        (4.0, 0.0, 0.0),
+        (4.0, 0.0, 0.0),
         None,
     )
 
