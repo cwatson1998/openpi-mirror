@@ -65,6 +65,10 @@ LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 REPLAY_VIDEO_FPS = 10
 _WANDB_MAX_TAG_LENGTH = 64
+_ONLINE_NEXT_OBJECT_SOURCE_SUITE_BY_EVAL_SUITE = {
+    "libero_spatial": "libero_spatial",
+    "libero_spatial_four_bowls": "libero_spatial",
+}
 
 
 @dataclasses.dataclass
@@ -166,10 +170,11 @@ def _validate_online_next_object_args(args: Args) -> None:
     online_annotation_requested = args.next_object_highlighting or args.next_object_placement_dot
     if not online_annotation_requested:
         return
-    if args.task_suite_name != "libero_spatial":
+    if args.task_suite_name not in _ONLINE_NEXT_OBJECT_SOURCE_SUITE_BY_EVAL_SUITE:
+        supported_suites = ", ".join(sorted(_ONLINE_NEXT_OBJECT_SOURCE_SUITE_BY_EVAL_SUITE))
         raise ValueError(
             "Online next-object highlighting and placement dots are currently supported only for "
-            f"`libero_spatial`, got `{args.task_suite_name}`."
+            f"{supported_suites}, got `{args.task_suite_name}`."
         )
     if args.next_object_placement_dot and not args.next_object_highlighting:
         raise ValueError("`next_object_placement_dot` requires `next_object_highlighting`.")
@@ -577,12 +582,21 @@ def _highlight_camera_names(args: Args) -> list[str]:
     return camera_names or ["agentview", "robot0_eye_in_hand"]
 
 
-def _resolve_online_annotation_plan(task_suite, task_id: int) -> OnlineNextObjectAnnotationPlan:
+def _resolve_online_annotation_plan(
+    task_suite,
+    task_id: int,
+    task_suite_name: str,
+) -> OnlineNextObjectAnnotationPlan:
     datasets_root = pathlib.Path(get_libero_path("datasets"))
-    source_demo_path = datasets_root / task_suite.get_task_demonstration(task_id)
+    source_suite_name = _ONLINE_NEXT_OBJECT_SOURCE_SUITE_BY_EVAL_SUITE[task_suite_name]
+    source_task_suite = task_suite
+    if source_suite_name != task_suite_name:
+        source_task_suite = benchmark.get_benchmark_dict()[source_suite_name]()
+    source_demo_path = datasets_root / source_task_suite.get_task_demonstration(task_id)
     annotation_plan = build_online_next_object_annotation_plan_from_source_demo(source_demo_path)
     logging.info(
-        "Resolved online next-object plan from %s: grasp_order=%s placement_targets=%s",
+        "Resolved online next-object plan for %s from %s: grasp_order=%s placement_targets=%s",
+        task_suite_name,
         source_demo_path,
         list(annotation_plan.grasp_order),
         [
@@ -778,7 +792,7 @@ def eval_libero(args: Args) -> None:
         task_description = prompt_overrides.get(task_description, task_description)
         online_annotation_plan = None
         if args.next_object_highlighting:
-            online_annotation_plan = _resolve_online_annotation_plan(task_suite, task_id)
+            online_annotation_plan = _resolve_online_annotation_plan(task_suite, task_id, args.task_suite_name)
 
         # Start episodes
         task_episodes, task_successes = 0, 0

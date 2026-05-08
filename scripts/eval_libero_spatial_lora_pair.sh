@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-TASK_SUITE="libero_spatial"
+TASK_SUITE="${TASK_SUITE:-libero_spatial}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
 HOST="127.0.0.1"
 PORT="${PORT:-8030}"
