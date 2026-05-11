@@ -7,6 +7,8 @@ cd "${ROOT_DIR}"
 
 TASK_SUITE="${TASK_SUITE:-libero_spatial}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
+TASK_INDICES_CSV="${TASK_INDICES_CSV:-}"
+MAX_STEPS_OVERRIDE="${MAX_STEPS_OVERRIDE:-}"
 HOST="127.0.0.1"
 PORT="${PORT:-8030}"
 RESIZE_SIZE="224"
@@ -46,6 +48,8 @@ Evaluates the two completed LIBERO Spatial LoRA checkpoints sequentially.
 
 Options:
   --trials N               rollouts per task (default: 10)
+  --task-indices IDS       comma-separated task ids to evaluate, e.g. 0 or 0,3
+  --max-steps N            optional per-episode rollout step cap
   --port PORT              websocket port for the local policy server (default: 8030)
   --server-venv PATH       OpenPI server venv (default: .venv)
   --libero-venv PATH       LIBERO eval venv (default: examples/libero/.venv)
@@ -94,6 +98,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --trials)
       NUM_TRIALS="$2"
+      shift 2
+      ;;
+    --task-indices)
+      TASK_INDICES_CSV="$2"
+      shift 2
+      ;;
+    --max-steps)
+      MAX_STEPS_OVERRIDE="$2"
       shift 2
       ;;
     --port)
@@ -269,6 +281,15 @@ run_checkpoint_eval() {
   local policy_tag="policy:${short_name}"
   local train_tag="train:${short_name}"
   local -a extra_eval_args=()
+  local -a task_filter_args=()
+
+  if [[ -n "${TASK_INDICES_CSV}" ]]; then
+    IFS=',' read -r -a parsed_task_indices <<< "${TASK_INDICES_CSV}"
+    task_filter_args+=(--args.task-indices "${parsed_task_indices[@]}")
+  fi
+  if [[ -n "${MAX_STEPS_OVERRIDE}" ]]; then
+    task_filter_args+=(--args.max-steps-override "${MAX_STEPS_OVERRIDE}")
+  fi
 
   if [[ "${short_name}" == "target-dot-from-libero" ]]; then
     extra_eval_args=(
@@ -333,6 +354,7 @@ run_checkpoint_eval() {
       --args.video-out-path "${eval_output_dir}" \
       --args.results-out-path "${results_out_path}" \
       --args.progress-out-path "${progress_out_path}" \
+      "${task_filter_args[@]}" \
       --args.wandb-enabled \
       --args.wandb-project "${WANDB_PROJECT}" \
       --args.wandb-name "${eval_name}" \
@@ -376,6 +398,12 @@ main() {
   log "Run id: ${RUN_ID}"
   log "Task suite: ${TASK_SUITE}"
   log "Trials per task: ${NUM_TRIALS}"
+  if [[ -n "${TASK_INDICES_CSV}" ]]; then
+    log "Task indices: ${TASK_INDICES_CSV}"
+  fi
+  if [[ -n "${MAX_STEPS_OVERRIDE}" ]]; then
+    log "Max steps override: ${MAX_STEPS_OVERRIDE}"
+  fi
   log "Output root: ${OUTPUT_ROOT}"
   log "Log root: ${LOG_ROOT}"
   log "W&B project: ${WANDB_PROJECT}"

@@ -20,6 +20,8 @@ The vanilla checkpoint is evaluated with unmodified RGB observations.
 Options are forwarded to scripts/eval_libero_spatial_lora_pair.sh.
 Common options:
   --trials N               rollouts per task (default: 5)
+  --task-indices IDS       comma-separated task ids to evaluate, e.g. 0 or 0,3
+  --max-steps N            optional per-episode rollout step cap
   --port PORT              websocket port for the local policy server (default: 8032)
   --only NAME              target-dot-from-libero or vanilla-from-libero
   --wandb-project NAME     W&B project name (default: libero)

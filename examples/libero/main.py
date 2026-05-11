@@ -91,6 +91,7 @@ class Args:
     task_split: str = "eval"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
+    max_steps_override: int | None = None  # Optional rollout-step cap override for smoke tests.
     mask_instances_csv: str = ""  # Optional comma-separated instance names to mask in returned RGB observations.
     mask_rgb_csv: str = "0,0,0"  # RGB color used for masked pixels.
     mask_alpha: float = 1.0  # Alpha used to blend masked pixels with mask_rgb_csv.
@@ -213,6 +214,7 @@ def _init_wandb(args: Args) -> None:
             "task_split_file": args.task_split_file,
             "task_split": args.task_split,
             "num_trials_per_task": args.num_trials_per_task,
+            "max_steps_override": args.max_steps_override,
             "mask_instances_csv": args.mask_instances_csv,
             "mask_rgb_csv": args.mask_rgb_csv,
             "mask_alpha": args.mask_alpha,
@@ -489,6 +491,7 @@ def _build_results_payload(
         "selected_tasks": selected_tasks,
         "num_trials_per_task": args.num_trials_per_task,
         "num_steps_wait": args.num_steps_wait,
+        "max_steps_override": args.max_steps_override,
         "replan_steps": args.replan_steps,
         "resize_size": args.resize_size,
         "seed": args.seed,
@@ -749,7 +752,7 @@ def eval_libero(args: Args) -> None:
     if args.task_suite_name == "libero_spatial":
         max_steps = 220  # longest training demo has 193 steps
     elif args.task_suite_name == "libero_spatial_four_bowls":
-        max_steps = 700
+        max_steps = 220
     elif args.task_suite_name == "libero_object":
         max_steps = 280  # longest training demo has 254 steps
     elif args.task_suite_name == "libero_goal":
@@ -760,6 +763,11 @@ def eval_libero(args: Args) -> None:
         max_steps = 400  # longest training demo has 373 steps
     else:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}")
+    if args.max_steps_override is not None:
+        if args.max_steps_override <= 0:
+            raise ValueError("max_steps_override must be positive when provided.")
+        max_steps = int(args.max_steps_override)
+        logging.info("Using max_steps override: %s", max_steps)
 
     client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
 
